@@ -3,10 +3,16 @@
 
 pub mod accounts;
 pub mod builds;
+pub mod doctor;
 pub mod fsutil;
+pub mod launch;
+pub mod links;
 pub mod paths;
+pub mod processes;
 pub mod runner;
+pub mod servers;
 pub mod settings;
+pub mod supervisor;
 
 #[cfg(test)]
 pub mod testenv;

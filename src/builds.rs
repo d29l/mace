@@ -147,7 +147,7 @@ fn channels_cache() -> PathBuf {
     paths::cache().join("channels.json")
 }
 
-fn remember(build: &Build) {
+pub(crate) fn remember(build: &Build) {
     let mut data = match fsutil::read_json(&channels_cache()) {
         Some(Value::Object(map)) => map,
         _ => Map::new(),
@@ -189,7 +189,9 @@ pub fn resolve(channel_name: &str) -> Option<Build> {
 pub fn resolve_with(channel_name: &str, timeout: Duration) -> Option<Build> {
     let channel_name = normal_channel(channel_name);
     let suffix = if channel_name == PRODUCTION { String::new() } else { format!("/channel/{channel_name}") };
-    for base in [VERSION_API, VERSION_API_FALLBACK] {
+    // MACE_OFFLINE: only what was learnt before (tests, or no network on purpose)
+    let bases = if std::env::var_os("MACE_OFFLINE").is_some() { &[][..] } else { &[VERSION_API, VERSION_API_FALLBACK][..] };
+    for base in bases {
         match ask(&format!("{base}{suffix}"), &channel_name, timeout) {
             Answer::Build(build) => {
                 remember(&build);
@@ -532,7 +534,7 @@ pub fn gc(accounts: &[Account]) -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::accounts::Account;
     use crate::testenv::TempHome;
@@ -548,7 +550,7 @@ mod tests {
     };
 
     /// (name, data, mode): S_IFLNK in the mode makes a symlink.
-    pub fn zip_of(entries: &[(&str, Vec<u8>, u32)]) -> Vec<u8> {
+    pub(crate) fn zip_of(entries: &[(&str, Vec<u8>, u32)]) -> Vec<u8> {
         let mut buffer = Cursor::new(Vec::new());
         {
             let mut writer = zip::ZipWriter::new(&mut buffer);
@@ -567,7 +569,7 @@ mod tests {
         buffer.into_inner()
     }
 
-    pub fn player(version: &str) -> Vec<(&'static str, Vec<u8>, u32)> {
+    pub(crate) fn player(version: &str) -> Vec<(&'static str, Vec<u8>, u32)> {
         let mut plist = Vec::new();
         let mut dict = plist::Dictionary::new();
         dict.insert("CFBundleShortVersionString".into(), version.into());
