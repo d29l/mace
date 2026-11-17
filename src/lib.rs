@@ -3,10 +3,13 @@
 
 pub mod accounts;
 pub mod builds;
+pub mod cli;
+pub mod desktop;
 pub mod doctor;
 pub mod fsutil;
 pub mod launch;
 pub mod links;
+pub mod migrate;
 pub mod paths;
 pub mod processes;
 pub mod runner;
