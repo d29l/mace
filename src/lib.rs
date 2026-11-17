@@ -2,6 +2,7 @@
 //! accounts as you like, each on the Roblox build its own channel wants.
 
 pub mod accounts;
+pub mod builds;
 pub mod fsutil;
 pub mod paths;
 pub mod runner;
