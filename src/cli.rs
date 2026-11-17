@@ -539,6 +539,10 @@ pub fn run(args: &[String]) -> i32 {
             return 0;
         }
         "active" => return if mace_running() { 0 } else { 1 },
+        "loading" => {
+            let Some(id) = args.get(1) else { return 2 };
+            return crate::ui::run_loading(id);
+        }
         "supervise" => {
             let Some(id) = args.get(1) else { return 2 };
             let url = args.iter().position(|a| a == "--url").and_then(|at| args.get(at + 1));
