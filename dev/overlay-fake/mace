@@ -1,0 +1,27 @@
+#!/bin/sh
+# A stand-in `mace` for previewing the overlay: prints a fixed state and logs
+# every other command it is given.
+here=$(dirname "$0")
+if [ "$1" = overlay-helper ]; then
+    # one JSON request per line: answer state requests, log and acknowledge runs
+    while IFS= read -r line; do
+        case $line in
+            *'"cmd": "state"'*|*'"cmd":"state"'*)
+                printf '{"type": "state", "state": %s}\n' "$("$0" overlay-state | tr -d '\n')" ;;
+            *)
+                id=$(printf '%s' "$line" | sed -n 's/.*"id": *\([0-9]*\).*/\1/p')
+                args=$(printf '%s' "$line" | sed -n 's/.*"args": *\[\(.*\)\].*/\1/p' | tr -d '"' | tr ',' ' ')
+                case $args in active*) ok=$([ "${MACE_FAKE_ACTIVE:-0}" = 0 ] && echo true || echo false) ;; *) ok=true; echo "mace $args" >> "${MACE_FAKE_LOG:-/dev/stderr}" ;; esac
+                printf '{"type": "done", "id": %s, "ok": %s, "error": ""}\n' "${id:-0}" "$ok" ;;
+        esac
+    done
+    exit 0
+elif [ "$1" = active ]; then
+    [ -n "${MACE_FAKE_ACTIVE_FILE:-}" ] && exit "$(cat "$MACE_FAKE_ACTIVE_FILE")"
+    exit "${MACE_FAKE_ACTIVE:-0}"
+elif [ "$1" = overlay-state ]; then
+    now=$(date +%s)
+    sed "s/NOW/$now/g; s/SINCE/$((now - 754))/g; s|HERE|$(cd "$here" && pwd)|g" "$here/state.json"
+else
+    echo "mace $*" >> "${MACE_FAKE_LOG:-/dev/stderr}"
+fi

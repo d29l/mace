@@ -1,0 +1,15 @@
+[Unit]
+Description=Mace in-game overlay (Quickshell)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Environment=MACE_BIN=@MACE_BIN@
+ExecStart=/usr/bin/qs -p @OVERLAY@
+Restart=on-failure
+# a leak can't grow past this: it restarts instead
+MemoryMax=1G
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

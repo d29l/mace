@@ -7,6 +7,7 @@ pub mod cli;
 pub mod desktop;
 pub mod doctor;
 pub mod fsutil;
+pub mod helper;
 pub mod launch;
 pub mod links;
 pub mod migrate;
