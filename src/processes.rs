@@ -193,6 +193,48 @@ pub fn close_windows(pids: &[i32]) -> bool {
     closed
 }
 
+/// Kill the processes in the account's prefix whose command line names
+/// `program`. Returns their pids.
+pub fn kill_in_prefix(account: &Account, program: &str) -> Vec<i32> {
+    let found: Vec<i32> = prefix_pids(&account.prefix, false, None)
+        .into_iter()
+        .filter(|pid| {
+            std::fs::read(format!("/proc/{pid}/cmdline"))
+                .is_ok_and(|args| args.windows(program.len()).any(|w| w == program.as_bytes()))
+        })
+        .collect();
+    for pid in &found {
+        // SAFETY: plain kill of a pid of ours.
+        unsafe { libc::kill(*pid, libc::SIGKILL) };
+    }
+    found
+}
+
+/// Stop Roblox's own updater in the account's prefix. Mace picks the version,
+/// and the updater crashes under Rosemary, closes the game to install, and
+/// leaves half an update behind. Returns whether one was running.
+pub fn stop_updaters(account: &Account) -> bool {
+    !kill_in_prefix(account, "RobloxPlayerInstaller").is_empty()
+}
+
+/// Stop Roblox's crash handler in the account's prefix, and wait until
+/// Rosemary has forgotten it (its socket in the process server is gone), so a
+/// link handed to the bundle reaches the game. Returns the pids stopped.
+pub fn stop_crash_handlers(account: &Account) -> Vec<i32> {
+    let handlers = kill_in_prefix(account, "RobloxCrashHandler");
+    let registered = |pid: i32| {
+        std::fs::read_dir(crate::paths::runtime_root().join("rosemary")).into_iter().flatten().flatten()
+            .any(|server| server.path().join("applications").join(pid.to_string()).exists())
+    };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline
+        && handlers.iter().any(|pid| Path::new(&format!("/proc/{pid}")).exists() || registered(*pid))
+    {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    handlers
+}
+
 /// Quit an account's Roblox: close its window, then kill what is left of it
 /// after `grace` (Roblox ignores SIGTERM).
 pub fn stop(account: &Account, accounts: &[Account], grace: Duration) -> bool {

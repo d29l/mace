@@ -173,6 +173,7 @@ pub fn set_framerate_cap(account: &Account, cap: u64) -> bool {
 pub fn prepare(account: &Account, progress: &mut dyn FnMut(u64, u64), config: &Settings, url: Option<&str>,
                build: Option<Build>) -> anyhow::Result<PathBuf> {
     let s = config.for_account(&account.id);
+    builds::clear_updater_leftovers(account);
     let bundle = match build.or_else(|| builds::wanted(account, url)) {
         Some(build) => builds::provision(account, &build, progress)?,
         None if account.bundle().exists() => account.bundle(),
@@ -242,6 +243,59 @@ pub fn mace_exe() -> PathBuf {
 /// supervisor (`mace supervise`), which returns at once. A running account is
 /// handed the link instead, as a Mac hands a URL to a running app, or, with no
 /// link, has its window raised. Returns the command line used.
+/// Give a running client a link, so it moves to that server without closing.
+///
+/// A second `rosemary run` of a running bundle is handed to one of the
+/// bundle's processes, and Roblox's crash handler lives in the bundle too: when
+/// it gets the link, it drops it. It only sends crash reports (which Rosemary
+/// can't anyway), so it is stopped first and the game is the one left.
+fn hand_over(account: &Account, argv: &[String], env: &Env) -> anyhow::Result<()> {
+    // an update waiting to be installed makes the client quit on a new link
+    processes::stop_updaters(account);
+    builds::clear_updater_leftovers(account);
+    processes::stop_crash_handlers(account);
+    let player_log = servers::newest_player_log(&account.logs());
+    let seen = player_log.as_ref().and_then(|p| p.metadata().ok()).map_or(0, |m| m.len());
+    let log = std::fs::OpenOptions::new().create(true).append(true).open(paths::logs().join(format!("{}.log", account.id)))?;
+    let mut child = Command::new(&argv[0])
+        .args(&argv[1..])
+        .env_clear()
+        .envs(env)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log)
+        .spawn()?;
+    let clock = std::time::Instant::now();
+    let took = |path: &Path| {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut text = String::new();
+        std::fs::File::open(path).ok().and_then(|mut f| {
+            f.seek(SeekFrom::Start(seen)).ok()?;
+            f.take(1 << 20).read_to_string(&mut text).ok()
+        });
+        text.contains(OPENED_URL)
+    };
+    while clock.elapsed() < HAND_OVER_TIMEOUT {
+        if player_log.as_deref().is_some_and(took) {
+            let _ = child.wait();
+            return Ok(());
+        }
+        if let Some(status) = child.try_wait()?
+            && !status.success()
+        {
+            bail!("Rosemary couldn't give {} the link", account.name());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    bail!("{}'s Roblox didn't take the link", account.name())
+}
+
+/// What the client logs when it is given a link.
+const OPENED_URL: &str = "(AppDelegate) application:openURLs";
+const HAND_OVER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(if cfg!(test) { 1 } else { 8 });
+
 pub fn start(account: &Account, link: Option<&str>, dry_run: bool, remember: bool) -> anyhow::Result<Vec<String>> {
     let config = settings::load();
     let url = resolve_link(link, account)?;
@@ -254,18 +308,19 @@ pub fn start(account: &Account, link: Option<&str>, dry_run: bool, remember: boo
         return Ok(command(account, &account.bundle(), url.as_deref(), &config)?.0);
     }
     std::fs::create_dir_all(paths::logs())?;
-    let argv = if !live.is_empty() {
+    if !live.is_empty() {
         let (argv, env) = command(account, &account.bundle(), url.as_deref(), &config)?;
-        spawn_detached(&argv, Some(&env), Some(&paths::logs().join(format!("{}.log", account.id))))?;
-        argv
-    } else {
-        let mut argv = vec![mace_exe().to_string_lossy().into_owned(), "supervise".into(), account.id.clone()];
-        if let Some(url) = &url {
-            argv.extend(["--url".into(), url.clone()]);
+        hand_over(account, &argv, &env)?;
+        if remember {
+            accounts::set_last_used(account)?;
         }
-        spawn_detached(&argv, None, None)?;
-        argv
-    };
+        return Ok(argv);
+    }
+    let mut argv = vec![mace_exe().to_string_lossy().into_owned(), "supervise".into(), account.id.clone()];
+    if let Some(url) = &url {
+        argv.extend(["--url".into(), url.clone()]);
+    }
+    spawn_detached(&argv, None, None)?;
     if remember {
         accounts::set_last_used(account)?;
     }
@@ -352,5 +407,64 @@ mod tests {
         assert!(std::fs::read_to_string(&path).unwrap().contains("<int name=\"FramerateCap\">9999</int>"));
         std::fs::write(&path, "<Properties/>").unwrap();
         assert!(!set_framerate_cap(&main, 9999));
+    }
+
+    /// A running account, faked: a "client" running the bundle and a "crash
+    /// handler" running from inside it, both in the account's prefix.
+    fn live_account(home: &TempHome, runner: &str) -> (Account, std::process::Child, std::process::Child, PathBuf) {
+        let runner = home.fake_runner(runner);
+        settings::save(&Settings::from_stored(&json!({"rosemary": runner, "gamemode": false, "cpu_cores": ""}))).unwrap();
+        let account = accounts::register(Account::new("main", home.make_prefix("main", Some(json!({}))), "", false)).unwrap();
+        let player_log = account.logs().join("0.1.0.1_20260101T000000Z_Player_aaaaa_last.log");
+        std::fs::write(&player_log, "x ! Joining game 'a' place 1 at 10.0.0.1\n").unwrap();
+        let idle = home.path().join("idle");
+        std::fs::write(&idle, "#!/bin/bash\nsleep 30\n").unwrap();
+        let spawn = |program: PathBuf| {
+            Command::new("bash").arg(&idle).arg("run").arg(program)
+                .env("ROSEMARY_PREFIX", &account.prefix).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap()
+        };
+        let client = spawn(account.bundle());
+        let handler = spawn(account.bundle().join("Contents/MacOS/RobloxCrashHandler"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while processes::running(&accounts::accounts(), None).get("main").is_none() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        (account, client, handler, player_log)
+    }
+
+    #[test]
+    fn a_running_client_is_handed_the_link_and_stays() {
+        let home = TempHome::new();
+        let (account, mut client, mut handler, player_log) = live_account(&home,
+            "#!/bin/bash\necho \"x (AppDelegate) application:openURLs:$4\" >> \"$FAKE_PLAYER_LOG\"\n");
+        let lib = account.home().join("Library/Roblox");
+        std::fs::create_dir_all(lib.join("UnzippedBundle/RobloxPlayer.app")).unwrap();
+        // SAFETY: TempHome holds the environment lock.
+        unsafe { std::env::set_var("FAKE_PLAYER_LOG", &player_log) };
+        let result = start(&account, Some("roblox://experiences/start?placeId=1818"), false, false);
+        unsafe { std::env::remove_var("FAKE_PLAYER_LOG") };
+        result.unwrap();
+        assert!(handler.try_wait().unwrap().is_some()); // the crash handler was stopped
+        assert!(client.try_wait().unwrap().is_none()); // the game kept running
+        assert!(std::fs::read_to_string(&player_log).unwrap().contains("openURLs:roblox://"));
+        assert!(read_status_missing(&account)); // no new start, no loading window
+        assert!(!lib.join("UnzippedBundle").exists()); // a waiting update would make it quit
+        let _ = client.kill();
+        let _ = client.wait();
+    }
+
+    #[test]
+    fn a_link_the_client_never_takes_is_an_error() {
+        let home = TempHome::new();
+        let (account, mut client, _handler, _) = live_account(&home, "#!/bin/bash\nexit 0\n");
+        let error = start(&account, Some("roblox://experiences/start?placeId=1818"), false, false).unwrap_err();
+        assert!(error.to_string().contains("didn't take the link"), "{error}");
+        assert!(client.try_wait().unwrap().is_none());
+        let _ = client.kill();
+        let _ = client.wait();
+    }
+
+    fn read_status_missing(account: &Account) -> bool {
+        crate::supervisor::read_status(&account.id).is_empty()
     }
 }

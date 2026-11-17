@@ -20,6 +20,7 @@ static FAULT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"rosemary: fault: (
 const FORCED: &str = "Update mode is chosen as FORCE";
 const UPDATER_STARTED: &str = "Found new version and the updater launched";
 const QUIT: &str = "applicationWillTerminate";
+const FINISHING: &str = "launchFinalizeUpdate";
 const SHUTDOWN: &str = "[FLog::SingleSurfaceApp] shutDown";
 
 fn modified(path: &PathBuf) -> SystemTime {
@@ -84,6 +85,18 @@ pub fn diagnose(account: &Account, live: bool) -> Vec<String> {
         found.push("Mace downloads the right version itself before each start, so this only happens when Roblox \
                     moves an account to another channel between two starts."
             .into());
+    } else if text.contains(FINISHING) {
+        found.push(format!("Roblox {version} found an update that an earlier updater left unfinished, handed over to \
+                            the updater to finish it, and quit."));
+        let since = modified(&log) - std::time::Duration::from_secs(5);
+        let moved = installer_logs(account).into_iter().filter(|p| modified(p) >= since)
+            .any(|p| MOVED.is_match(&read_tail(&p, 4 << 20)));
+        if moved {
+            found.push("The updater put the old version it had unpacked back then over this account's copy.".into());
+        }
+        found.push("Mace clears those leftovers and checks the copy before each start, and starts Roblox again when \
+                    this happens anyway; `mace update` does the same without starting it."
+            .into());
     } else if let Some(m) = JOINED.captures(&text) {
         found.push(format!("Roblox {version} started and joined place {}.{}", &m[1],
                            if live { " It is still running." } else { "" }));
@@ -140,6 +153,21 @@ mod tests {
         assert!(found[0].contains("0.747.0.7471481"));
         assert!(found[1].contains("installed the new version, then crashed"));
         assert!(found[1].contains("NSMutableSet initWithCapacity:"));
+    }
+
+    #[test]
+    fn finishing_an_old_update() {
+        let home = TempHome::new();
+        let account = Account::new("main", home.make_prefix("f", None), "", false);
+        std::fs::write(account.logs().join("0.747.0.7471481_20261117T150004Z_Player_2e3d8_last.log"),
+                       format!("{},Info [FLog::UpdateController] MacUpdateController::launchFinalizeUpdate: launching \
+                                finalize stage\n", stamp(0.88))).unwrap();
+        std::fs::write(account.logs().join("RobloxPlayerInstaller_2026-11-17_16:00:04.log"),
+                       "INFO +[MacUtil moveItemAtPath:toFolder:withName:error:] Successfully moved \
+                        /Users/w/Library/Roblox/UnzippedBundle/RobloxPlayer.app to /Volumes/Host/x/Roblox.app.\n").unwrap();
+        let found = diagnose(&account, false);
+        assert!(found[0].contains("left unfinished"), "{found:?}");
+        assert!(found[1].contains("old version"), "{found:?}");
     }
 
     #[test]

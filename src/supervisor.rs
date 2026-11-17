@@ -28,7 +28,9 @@ use crate::settings::{self, Settings};
 use crate::{fsutil, launch, paths, processes, servers};
 
 const WINDOW_TIMEOUT: Duration = Duration::from_secs(120);
-const UPDATER: &str = "Found new version and the updater launched";
+// what the client logs when it hands over to its updater: a new version, or
+// finishing one an earlier updater started
+const UPDATER: [&str; 2] = ["Found new version and the updater launched", "launchFinalizeUpdate"];
 static FRAMES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bframes=([0-9.]+)/s").unwrap());
 static PLACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)placeId(?:=|%3D)(\d+)").unwrap());
 // The join reply in the client's log names who is playing; for a roblox.com link
@@ -132,6 +134,9 @@ fn open_loading_window(account_id: &str, config: &Settings) {
 }
 
 pub fn notify(title: &str, body: &str) {
+    if cfg!(test) {
+        return; // never on the desktop of whoever runs the tests
+    }
     crate::cli::notify(title, body, &[], false);
 }
 
@@ -169,17 +174,11 @@ fn learn_browser_user(account: Account, since: f64) {
     }
 }
 
-fn is_installer(pid: i32) -> bool {
-    std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|args| {
-        args.windows(b"RobloxPlayerInstaller".len()).any(|w| w == b"RobloxPlayerInstaller")
-    })
-}
-
 fn updater_logged(account: &Account, since: f64) -> bool {
     let Some(log) = servers::newest_player_log(&account.logs()) else { return false };
     let modified = log.metadata().and_then(|m| m.modified()).ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0.0, |d| d.as_secs_f64());
-    modified >= since && std::fs::read_to_string(&log).is_ok_and(|text| text.contains(UPDATER))
+    modified >= since && std::fs::read_to_string(&log).is_ok_and(|text| UPDATER.iter().any(|marker| text.contains(marker)))
 }
 
 /// Copy the client's output to its log, except Rosemary's statistics, which
@@ -218,10 +217,55 @@ pub fn pump(stream: impl std::io::Read, log_path: &Path, account_id: &str) {
     let _ = std::fs::remove_file(&stats_file);
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 enum Outcome {
+    /// Roblox's window came up; the client ran until it was closed.
+    Played,
+    /// Roblox handed over to its own updater (stopped by us).
     Updated,
-    Exited,
+    /// The client quit before it showed a window, without an updater.
+    Vanished,
+}
+
+/// After the client quits without a window, how long its updater may take to
+/// show up: the client starts it and quits at once.
+const UPDATER_GRACE: Duration = Duration::from_secs(4);
+
+fn window_up(pids: &[i32], running_for: Duration) -> bool {
+    if cfg!(test) {
+        return running_for > Duration::from_millis(300); // the fake client has no window
+    }
+    if *processes::HYPRLAND {
+        processes::window_of(pids).is_some()
+    } else {
+        running_for > Duration::from_secs(12) // no way to see windows: assume it's up by now
+    }
+}
+
+/// While the game runs: Roblox can start its updater at any time (the server
+/// may move the account to another channel mid-game), and an update it leaves
+/// waiting makes the client quit to install it when it is next given a link.
+/// The updater is stopped as soon as it shows up, before it downloads.
+fn watch_session(account: &Account, child: &mut std::process::Child) -> anyhow::Result<()> {
+    while child.try_wait()?.is_none() {
+        if processes::stop_updaters(account) {
+            builds::clear_updater_leftovers(account);
+            note(account, "Roblox started its updater during the game; stopped it (Mace installs versions)");
+        }
+        std::thread::sleep(SESSION_POLL);
+    }
+    Ok(())
+}
+
+const SESSION_POLL: Duration = Duration::from_millis(500);
+
+/// A line of Mace's own in the account's log.
+fn note(account: &Account, text: &str) {
+    if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true)
+        .open(paths::logs().join(format!("{}.log", account.id)))
+    {
+        let _ = writeln!(log, "mace: {text}");
+    }
 }
 
 /// Run the client once.
@@ -250,38 +294,52 @@ fn run_client(account: &Account, bundle: &Path, url: Option<&str>, config: &Sett
     report.set("starting", "Starting Roblox", None);
     let (mut updated, mut shown) = (false, false);
     while child.try_wait()?.is_none() && clock.elapsed() < WINDOW_TIMEOUT && !shown {
-        let pids = processes::prefix_pids(&account.prefix, false, None);
-        let installers: Vec<i32> = pids.iter().copied().filter(|p| is_installer(*p)).collect();
-        if !installers.is_empty() {
-            for pid in installers {
-                // SAFETY: plain kill of a pid of ours.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
-            }
+        if processes::stop_updaters(account) {
             if !updated {
                 updated = true;
                 report.set("updating", "Roblox wants another version for this account", None);
             }
         } else if !updated {
-            shown = if *processes::HYPRLAND {
-                processes::window_of(&pids).is_some()
-            } else {
-                clock.elapsed() > Duration::from_secs(12) // no way to see windows: assume it's up by now
-            };
+            shown = window_up(&processes::prefix_pids(&account.prefix, false, None), clock.elapsed());
             if shown {
                 report.set("running", "Roblox is open", None);
             }
         }
         std::thread::sleep(Duration::from_millis(300));
     }
+    if shown {
+        watch_session(account, &mut child)?;
+    }
+    if !shown && !updated && child.try_wait()?.is_none() {
+        // no window in all that time: a client stuck somewhere, start over
+        let _ = child.kill();
+    }
     child.wait()?;
+    if !shown {
+        // the client starts its updater and quits straight away
+        let grace = Instant::now();
+        while grace.elapsed() < UPDATER_GRACE {
+            updated |= processes::stop_updaters(account);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
     let _ = pumping.join();
-    if updated || updater_logged(account, started) { Ok(Outcome::Updated) } else { Ok(Outcome::Exited) }
+    Ok(if updated || (!shown && updater_logged(account, started)) {
+        Outcome::Updated
+    } else if shown {
+        Outcome::Played
+    } else {
+        Outcome::Vanished
+    })
 }
 
 fn last_line(error: &anyhow::Error) -> String {
     let text = format!("{error:#}");
     text.trim().lines().last().unwrap_or("Roblox didn't start").to_string()
 }
+
+/// Starts before Mace gives up on a launch.
+const ATTEMPTS: usize = 4;
 
 pub fn run(account_id: &str, url: Option<&str>) -> i32 {
     let account = match accounts::get(account_id) {
@@ -298,44 +356,54 @@ pub fn run(account_id: &str, url: Option<&str>) -> i32 {
         let (who, since) = (account.clone(), unix_time());
         std::thread::spawn(move || learn_browser_user(who, since));
     }
+    let fail = |message: &str| {
+        report.set("failed", message, None);
+        notify(&format!("{} didn't start", account.name()), message);
+        1
+    };
     let mut build: Option<Build> = None;
-    for _ in 0..3 {
+    let mut retried = false;
+    for attempt in 1..=ATTEMPTS {
         report.set("preparing", "Checking which Roblox this account needs", None);
         if build.is_none() {
             build = builds::wanted(&account, url);
         }
         let version = build.as_ref().map(|b| b.version.clone()).unwrap_or_default();
+        // also puts back a copy Roblox's updater got at, and clears what it left behind
         let bundle = match launch::prepare(&account, &mut report.download(version), &config, url, build.clone()) {
             Ok(bundle) => bundle,
-            Err(error) => {
-                report.set("failed", &last_line(&error), None);
-                return 1;
-            }
+            Err(error) => return fail(&last_line(&error)),
         };
-        match run_client(&account, &bundle, url, &config, &report) {
-            Ok(Outcome::Exited) => break,
-            Ok(Outcome::Updated) => {}
-            Err(error) => {
-                report.set("failed", &last_line(&error), None);
-                return 1;
-            }
+        let outcome = match run_client(&account, &bundle, url, &config, &report) {
+            Ok(outcome) => outcome,
+            Err(error) => return fail(&last_line(&error)),
+        };
+        if outcome == Outcome::Played {
+            report.set("done", "", None);
+            let _ = std::fs::remove_file(status_dir().join(format!("{}.json", account.id)));
+            return 0;
         }
-        // the version the client was just told to run
-        let asked = builds::last_check(&account);
+        if attempt == ATTEMPTS {
+            break;
+        }
+        builds::clear_updater_leftovers(&account);
+        let asked = (outcome == Outcome::Updated).then(|| builds::last_check(&account)).flatten();
         match asked {
+            // the version the client was just told to run
             Some(asked) if build.as_ref().is_none_or(|b| b.guid != asked.guid) => {
                 report.set("updating", &format!("Installing Roblox {}, then opening the game again", asked.version), None);
                 build = Some(asked);
             }
-            _ => {
-                report.set("failed", "Roblox keeps asking for an update; see `mace why`", None);
-                return 1;
+            // the same version: the updater was finishing an old update, or
+            // the client fell over; start once more on a checked copy
+            _ if !retried => {
+                retried = true;
+                report.set("preparing", "Roblox didn't open; starting it again", None);
             }
+            _ => break,
         }
     }
-    report.set("done", "", None);
-    let _ = std::fs::remove_file(status_dir().join(format!("{}.json", account.id)));
-    0
+    fail("Roblox keeps closing before its window opens; see `mace why`")
 }
 
 #[cfg(test)]
@@ -457,4 +525,126 @@ exit 0
         let left: Vec<_> = std::fs::read_dir(status_dir()).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(left, ["main.json"]); // no leftovers
     }
+
+    /// Settings, an account and a one-build store for a fake Rosemary.
+    fn fake_setup(home: &TempHome, script: &str) -> (PathBuf, Account, Build) {
+        use crate::builds::tests::{player, zip_of};
+        let state = home.path().join("fake");
+        std::fs::create_dir_all(&state).unwrap();
+        let runner = home.fake_runner(script);
+        let s = Settings::from_stored(&json!({"rosemary": runner, "gamemode": false, "cpu_cores": "",
+                                              "loading_screen": false, "panel_fps": false}));
+        settings::save(&s).unwrap();
+        let build = Build::new("version-00000000000000a1", "0.1.0.1", "production");
+        let storage = json!({"UpdateControllerCacheChannel": "",
+                             "UpdateControllerCacheJsonPayload": json!({"version": build.version,
+                                                                        "clientVersionUpload": build.guid}).to_string()});
+        let prefix = home.make_prefix("main", Some(storage));
+        let account = accounts::register(Account::new("main", &prefix, "", false)).unwrap();
+        std::fs::create_dir_all(paths::downloads()).unwrap();
+        std::fs::write(paths::downloads().join(format!("{}-RobloxPlayer.zip", build.guid)),
+                       zip_of(&player(&build.version))).unwrap();
+        builds::remember(&build);
+        (state, account, build)
+    }
+
+    fn run_fake(state: &Path, account: &Account, url: &str) -> (i32, Vec<String>) {
+        // SAFETY: the caller's TempHome holds the environment lock.
+        unsafe {
+            std::env::set_var("MACE_OFFLINE", "1");
+            std::env::set_var("FAKE_STATE", state);
+            std::env::set_var("FAKE_USER", paths::user());
+            std::env::set_var("FAKE_BUNDLE", account.bundle());
+        }
+        let code = run(&account.id, Some(url));
+        unsafe {
+            for var in ["MACE_OFFLINE", "FAKE_STATE", "FAKE_USER", "FAKE_BUNDLE"] {
+                std::env::remove_var(var);
+            }
+        }
+        let calls = std::fs::read_to_string(state.join("calls")).unwrap_or_default();
+        (code, calls.lines().map(str::to_string).collect())
+    }
+
+    /// What happened for real: an updater left half an update behind, the
+    /// client handed over to it to finish and quit, and the updater, showing up
+    /// only after that, put an old bundle over the account's copy.
+    const FINISHING_RUNNER: &str = r#"#!/bin/bash
+echo "$2 $4" >> "$FAKE_STATE/calls"
+lib="$ROSEMARY_PREFIX/root/Users/$FAKE_USER/Library/Roblox"
+[ -e "$lib/UnzippedBundle" ] && touch "$FAKE_STATE/saw-leftovers"
+if [ ! -e "$FAKE_STATE/finished" ]; then
+    touch "$FAKE_STATE/finished"
+    (sleep 0.5; rm "$FAKE_BUNDLE/Contents/Info.plist"; exec -a RobloxPlayerInstaller sleep 30) &
+    echo $! > "$FAKE_STATE/installer"
+    exit 0
+fi
+sleep 0.6
+exit 0
+"#;
+
+    #[test]
+    fn an_updater_finishing_an_old_update_is_undone() {
+        let home = TempHome::new();
+        let (state, account, build) = fake_setup(&home, FINISHING_RUNNER);
+        let lib = account.home().join("Library/Roblox");
+        std::fs::create_dir_all(lib.join("UnzippedBundle/RobloxPlayer.app")).unwrap();
+        std::fs::create_dir_all(lib.join("RobloxPlayerInstaller")).unwrap();
+        std::fs::write(lib.join("RobloxPlayerInstaller/InstallerInfo.log"), "1 IN_PROGRESS 2 Unzip Finished\n").unwrap();
+        let url = "roblox-player:1+launchmode:play+gameinfo:abc+placelauncherurl:x";
+        let (code, calls) = run_fake(&state, &account, url);
+        assert_eq!(code, 0);
+        assert!(!state.join("saw-leftovers").exists()); // cleared before the client ran
+        assert_eq!(calls.len(), 2); // opened again
+        assert!(calls.iter().all(|c| c.ends_with(url))); // into the same game
+        assert_eq!(builds::bundle_version(&account.bundle()).as_deref(), Some(build.version.as_str())); // repaired
+        let installer: i32 = std::fs::read_to_string(state.join("installer")).unwrap().trim().parse().unwrap();
+        // SAFETY: probing a pid.
+        assert_ne!(unsafe { libc::kill(installer, 0) }, 0); // Roblox's updater was stopped
+        assert!(read_status("main").is_empty());
+    }
+
+    #[test]
+    fn a_client_that_never_opens_is_a_failure_not_silence() {
+        let home = TempHome::new();
+        let (state, account, _) = fake_setup(&home, "#!/bin/bash\necho \"$2 $4\" >> \"$FAKE_STATE/calls\"\nexit 0\n");
+        let (code, calls) = run_fake(&state, &account, "roblox://experiences/start?placeId=1818");
+        assert_eq!(code, 1);
+        assert_eq!(calls.len(), 2); // tried once more first
+        let status = read_status("main");
+        assert_eq!(status["state"], "failed"); // the loading window says so
+        assert!(status["message"].as_str().unwrap().contains("mace why"));
+    }
+
+    /// The server moved the account to another channel mid-game, and the client
+    /// started its updater in the background, as on 2026-11-17.
+    const MID_GAME_RUNNER: &str = r#"#!/bin/bash
+echo "$2 $4" >> "$FAKE_STATE/calls"
+lib="$ROSEMARY_PREFIX/root/Users/$FAKE_USER/Library/Roblox"
+sleep 1
+mkdir -p "$lib/UnzippedBundle" "$lib/RobloxPlayerInstaller"
+echo "1 IN_PROGRESS 2 Installer started" > "$lib/RobloxPlayerInstaller/InstallerInfo.log"
+(exec -a RobloxPlayerInstaller sleep 30) &
+echo $! > "$FAKE_STATE/installer"
+sleep 1.5
+exit 0
+"#;
+
+    #[test]
+    fn an_updater_during_the_game_is_stopped() {
+        let home = TempHome::new();
+        let (state, account, _) = fake_setup(&home, MID_GAME_RUNNER);
+        let (code, calls) = run_fake(&state, &account, "roblox://experiences/start?placeId=1818");
+        assert_eq!(code, 0);
+        assert_eq!(calls.len(), 1); // the game wasn't started again
+        let installer: i32 = std::fs::read_to_string(state.join("installer")).unwrap().trim().parse().unwrap();
+        // SAFETY: probing a pid.
+        assert_ne!(unsafe { libc::kill(installer, 0) }, 0);
+        let lib = account.home().join("Library/Roblox");
+        assert!(!lib.join("UnzippedBundle").exists());
+        assert!(!lib.join("RobloxPlayerInstaller/InstallerInfo.log").exists());
+        let log = std::fs::read_to_string(paths::logs().join("main.log")).unwrap();
+        assert!(log.contains("updater during the game"));
+    }
 }
+

@@ -56,6 +56,15 @@ pub fn cache() -> PathBuf {
     xdg("XDG_CACHE_HOME", ".cache").join("mace")
 }
 
+/// $XDG_RUNTIME_DIR itself, where Rosemary keeps its process servers too.
+pub fn runtime_root() -> PathBuf {
+    match env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
+        Some(path) if path.is_absolute() => path,
+        // SAFETY: getuid can't fail.
+        _ => PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })),
+    }
+}
+
 pub fn runtime() -> PathBuf {
     match env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
         Some(path) if path.is_absolute() => path.join("mace"),

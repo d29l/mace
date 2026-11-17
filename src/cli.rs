@@ -304,6 +304,9 @@ fn cmd_update(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
     let live = live();
     let config = settings::load();
     for account in targets {
+        if !live.contains_key(&account.id) && builds::clear_updater_leftovers(&account) {
+            writeln!(out, "{}: cleared an unfinished update Roblox's updater left behind", account.name())?;
+        }
         let Some(build) = builds::wanted(&account, None) else {
             eprintln!("{}: can't reach Roblox to check its version", account.name());
             continue;

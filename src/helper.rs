@@ -3,9 +3,11 @@
 //!
 //! It reads one JSON request per line on stdin and answers on stdout:
 //!
-//!     {"cmd": "state"}                 -> {"type": "state", "state": {...}}
-//!     {"cmd": "run", "id": 7, "args": ["start", "alt1", "main"]}
-//!                                      -> {"type": "done", "id": 7, "ok": true, "error": ""}
+//! ```text
+//! {"cmd": "state"}                 -> {"type": "state", "state": {...}}
+//! {"cmd": "run", "id": 7, "args": ["start", "alt1", "main"]}
+//!                                  -> {"type": "done", "id": 7, "ok": true, "error": ""}
+//! ```
 //!
 //! State requests that arrive while one is being worked out are folded into a
 //! single follow-up. Commands run on their own threads. Anything else that

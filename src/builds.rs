@@ -485,6 +485,32 @@ pub fn provision(account: &Account, build: &Build, progress: &mut dyn FnMut(u64,
     Ok(account.bundle())
 }
 
+/// What Roblox's own updater leaves in the account's Library when it dies
+/// part-way, as it does under Rosemary. The client takes an unfinished
+/// update there as one to complete and hands over to the updater, which moves
+/// whatever bundle it unpacked back then over the account's copy.
+const UPDATER_LEFTOVERS: [&str; 3] = [
+    "Library/Roblox/RobloxPlayerInstaller/InstallerInfo.log",
+    "Library/Roblox/UnzippedBundle",
+    "Library/Roblox/RobloxPlayer.zip",
+];
+
+/// Mace picks the version, so none of that is ever wanted. Returns whether
+/// anything was there.
+pub fn clear_updater_leftovers(account: &Account) -> bool {
+    let mut found = false;
+    for leftover in UPDATER_LEFTOVERS {
+        let path = account.home().join(leftover);
+        let removed = match path.symlink_metadata() {
+            Ok(meta) if meta.is_dir() => fs::remove_dir_all(&path).is_ok(),
+            Ok(_) => fs::remove_file(&path).is_ok(),
+            Err(_) => false,
+        };
+        found |= removed;
+    }
+    found
+}
+
 /// Roblox reads FastFlags from ClientSettings/ClientAppSettings.json in its
 /// bundle. Written only when it changes, and removed when there are none.
 pub fn write_fast_flags(bundle: &Path, flags: &Map<String, Value>) -> anyhow::Result<()> {
@@ -689,6 +715,25 @@ pub(crate) mod tests {
                 Some(Build::new(entry["guid"].as_str()?, entry["version"].as_str().unwrap_or(""), channel_name))
             }
         }
+    }
+
+    #[test]
+    fn updater_leftovers_go_and_nothing_else() {
+        let home = TempHome::new();
+        let account = Account::new("main", home.make_prefix("main", Some(json!({}))), "", false);
+        let roblox = account.home().join("Library/Roblox");
+        fs::create_dir_all(roblox.join("RobloxPlayerInstaller")).unwrap();
+        fs::write(roblox.join("RobloxPlayerInstaller/InstallerInfo.log"), "1 IN_PROGRESS 2 Installer started\n").unwrap();
+        fs::create_dir_all(roblox.join("UnzippedBundle/RobloxPlayer.app/Contents")).unwrap();
+        fs::write(roblox.join("RobloxPlayer.zip"), "zip").unwrap();
+        fs::write(roblox.join("GlobalBasicSettings_13.xml"), "settings").unwrap();
+        assert!(clear_updater_leftovers(&account));
+        assert!(!roblox.join("RobloxPlayerInstaller/InstallerInfo.log").exists());
+        assert!(!roblox.join("UnzippedBundle").exists());
+        assert!(!roblox.join("RobloxPlayer.zip").exists());
+        assert!(roblox.join("GlobalBasicSettings_13.xml").exists()); // the player's settings stay
+        assert!(roblox.join("LocalStorage/appStorage.json").exists());
+        assert!(!clear_updater_leftovers(&account)); // nothing left to clear
     }
 
     #[test]
