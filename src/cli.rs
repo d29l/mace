@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 
 use crate::accounts::{self, Account};
 use crate::servers::{self, LogFollower};
-use crate::{builds, desktop, doctor, launch, migrate, paths, processes, settings, supervisor};
+use crate::{builds, desktop, doctor, launch, migrate, processes, settings, supervisor};
 
 pub const HELP: &str = "mace: the macOS Roblox client on Linux, on several accounts at once.
 
@@ -39,7 +39,9 @@ pub const HELP: &str = "mace: the macOS Roblox client on Linux, on several accou
 ACCOUNT is an id (main, alt1, ...), a name given in Mace, a username or a display name.
 LINK is a join link, a game/share/roblox:// link, or \"PLACEID JOBID\".";
 
-/// A notification; with actions, it waits and returns the one clicked.
+/// A notification; with actions, it waits and returns the one clicked. The
+/// icon goes by its name in the icon theme (installed by `mace integrate`):
+/// a file path would arrive as an image beside the text instead.
 pub fn notify(title: &str, body: &str, actions: &[(&str, &str)], dry_run: bool) -> Option<String> {
     if dry_run {
         println!("[toast] {title} | {body} | {actions:?}");
@@ -49,10 +51,9 @@ pub fn notify(title: &str, body: &str, actions: &[(&str, &str)], dry_run: bool) 
         println!("{title}: {body}");
         return None;
     }
-    let logo = paths::logo();
-    let icon = if logo.exists() { logo.to_string_lossy().into_owned() } else { crate::APP_ID.into() };
     let mut command = Command::new("notify-send");
-    command.args(["-a", "Mace", "-i", &icon]);
+    command.args(["-a", "Mace"]);
+    command.args(["-i", crate::APP_ID]);
     for (name, text) in actions {
         command.arg(format!("--action={name}={text}"));
     }

@@ -132,11 +132,7 @@ fn open_loading_window(account_id: &str, config: &Settings) {
 }
 
 pub fn notify(title: &str, body: &str) {
-    if fsutil::which("notify-send").is_some() {
-        let logo = paths::logo();
-        let icon = if logo.exists() { logo.to_string_lossy().into_owned() } else { crate::APP_ID.to_string() };
-        let _ = Command::new("notify-send").args(["-a", "Mace", "-i", &icon, title, body]).output();
-    }
+    crate::cli::notify(title, body, &[], false);
 }
 
 /// After a start from roblox.com: remember which account the browser is signed
