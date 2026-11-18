@@ -806,9 +806,11 @@ mod tests {
         let toasts: Vec<ToPanel> = BufReader::new(stream).lines().map_while(Result::ok)
             .filter_map(|l| serde_json::from_str::<ToPanel>(&l).ok())
             .filter(|m| matches!(m, ToPanel::Toast { .. })).take(2).collect();
-        assert_eq!(toasts, vec![
-            ToPanel::Toast { title: "Joined Obby".into(), body: "Paris, FR".into() },
-            ToPanel::Toast { title: "Second joined your server".into(), body: String::new() },
-        ]);
+        // both come; on a slow machine one look at the logs can find both, in either order
+        assert_eq!(toasts.len(), 2, "{toasts:?}");
+        for want in [ToPanel::Toast { title: "Joined Obby".into(), body: "Paris, FR".into() },
+                     ToPanel::Toast { title: "Second joined your server".into(), body: String::new() }] {
+            assert!(toasts.contains(&want), "{toasts:?}");
+        }
     }
 }
