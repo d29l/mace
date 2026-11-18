@@ -80,8 +80,13 @@ impl Window {
         tabs.add_titled_with_icon(&settings.advanced, Some("advanced"), "Advanced", "preferences-other-symbolic");
 
         toasts.set_child(Some(&tabs));
+        let update = super::update::bar(&window, {
+            let toasts = toasts.clone();
+            move |text| toasts.add_toast(adw::Toast::new(&markup(text)))
+        });
         let view = adw::ToolbarView::new();
         view.add_top_bar(&header);
+        view.add_top_bar(&update);
         view.set_content(Some(&toasts));
         window.set_content(Some(&view));
 

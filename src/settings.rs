@@ -87,6 +87,8 @@ pub struct Settings {
     pub background_fps: u64,
     /// Nudge idle games now and then so Roblox doesn't kick them after 20 minutes.
     pub anti_afk: bool,
+    /// Ask GitHub once a day for a newer Mace (only the copy install.sh puts in ~/.local/bin updates itself).
+    pub check_updates: bool,
     /// The in-game panel's key, e.g. "INSERT" or "SHIFT + F1" (the game has to receive it).
     pub overlay_key: String,
     /// Account id -> its own values.
@@ -115,6 +117,7 @@ impl Default for Settings {
             panel_blur: false,
             background_fps: 10,
             anti_afk: true,
+            check_updates: true,
             overlay_key: "INSERT".into(),
             accounts: Map::new(),
         }
@@ -273,6 +276,7 @@ impl Settings {
             panel_blur: truthy(get("panel_blur"), d.panel_blur),
             background_fps: as_u64(get("background_fps"), d.background_fps).min(1000),
             anti_afk: truthy(get("anti_afk"), d.anti_afk),
+            check_updates: truthy(get("check_updates"), d.check_updates),
             overlay_key: text(get("overlay_key")).trim().to_string(),
             accounts,
         }

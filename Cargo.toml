@@ -20,6 +20,7 @@ tempfile = "3"
 anyhow = "1"
 mace-proto = { path = "proto" }
 png = "0.18"
+sha2 = "0.10"
 
 [profile.release]
 lto = "thin"

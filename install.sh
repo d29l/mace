@@ -1,11 +1,13 @@
 #!/bin/sh
-# Install Mace for this user: build it, put `mace` in ~/.local/bin and its files
-# (the in-game panel's library, the icon) in ~/.local/share/mace/app, and add
-# the menu entries.
+# Install Mace for this user: put `mace` in ~/.local/bin and its files (the
+# in-game panel's library, the icon) in ~/.local/share/mace/app, and add the
+# menu entries. From a release download it installs what's there; from a
+# source folder it builds Mace first.
 #
 #   ./install.sh [--dev] [--no-links]
 #
-#   --dev       link to this folder's build instead of copying it (for working on Mace)
+#   --dev       link to this folder's build instead of copying it (for working
+#               on Mace; that copy doesn't update itself)
 #   --no-links  don't make roblox.com's Play button open Mace
 #
 # The in-game panel (and its toasts) needs nothing else: Mace draws it inside
@@ -23,27 +25,37 @@ for arg in "$@"; do
 done
 fail() { echo "$*" >&2; exit 1; }
 
-command -v cargo >/dev/null || fail "Mace is built with Rust: install it from rustup.rs or your distribution (e.g. pacman -S rust)"
-pkg-config --exists gtk4 'libadwaita-1 >= 1.5' 2>/dev/null ||
-    fail "Mace needs GTK 4 and libadwaita 1.5 or newer (e.g. pacman -S gtk4 libadwaita)"
-
 data=${XDG_DATA_HOME:-$HOME/.local/share}
 config=${XDG_CONFIG_HOME:-$HOME/.config}
 bin=$HOME/.local/bin
 app=$data/mace/app
 
 # mace, and the in-game panel's library
-(cd "$here" && cargo build --release --locked)
+if [ -f "$here/Cargo.toml" ]; then
+    # a source folder: build it
+    command -v cargo >/dev/null || fail "Mace is built with Rust: install it from rustup.rs or your distribution (e.g. pacman -S rust)"
+    pkg-config --exists gtk4 'libadwaita-1 >= 1.5' 2>/dev/null ||
+        fail "Mace needs GTK 4 and libadwaita 1.5 or newer (e.g. pacman -S gtk4 libadwaita)"
+    (cd "$here" && cargo build --release --locked)
+    built=$here/target/release
+else
+    # a release: built already
+    [ -z "$dev" ] || fail "--dev is for a source folder (git clone https://github.com/d29l/mace)"
+    built=$here
+    "$built/mace" --version >/dev/null 2>&1 ||
+        fail "Mace can't start here: it needs GTK 4 and libadwaita 1.5 or newer (e.g. pacman -S gtk4 libadwaita)"
+fi
 mkdir -p "$bin"
 if [ -n "$dev" ]; then
-    ln -sf "$here/target/release/mace" "$bin/mace"
+    ln -sf "$built/mace" "$bin/mace"
     rm -rf "$app"  # this folder's own files are used, and the library beside the build
 else
-    install -m 755 "$here/target/release/mace" "$bin/mace"
+    rm -f "$bin/mace"  # a --dev link, or the program running now: replaced, not written through
+    install -m 755 "$built/mace" "$bin/mace"
     rm -rf "$app.new"
     mkdir -p "$app.new/lib"
     cp -r "$here/data" "$app.new/"
-    install -m 644 "$here/target/release/libmace_panel.so" "$app.new/lib/"
+    install -m 644 "$built/libmace_panel.so" "$app.new/lib/"
     rm -rf "$app"
     mv "$app.new" "$app"
 fi

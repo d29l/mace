@@ -38,24 +38,31 @@ prefix, so you can play on several of them at the same time.
 - An x86-64 Linux system with a Vulkan driver
 - [Rosemary](https://github.com/microlift/rosemary), installed through
   [Butter](https://github.com/microlift/butter)
-- GTK 4 and libadwaita 1.5+, and Rust to build Mace
+- GTK 4 and libadwaita 1.5+ (and Rust, only to build Mace yourself)
 
 On Arch:
 
 ```sh
-sudo pacman -S rust gtk4 libadwaita
+sudo pacman -S gtk4 libadwaita
 ```
 
 ## Install
 
 ```sh
+curl -L https://github.com/d29l/mace/releases/latest/download/mace-x86_64-linux.tar.gz | tar xz
+cd mace-*/ && ./install.sh
+```
+
+This adds Mace to your app menu and makes the Play button on roblox.com open
+it. If you used Nutmeg before, your settings and login are picked up
+automatically.
+
+To build it yourself instead:
+
+```sh
 git clone https://github.com/d29l/mace && cd mace
 ./install.sh
 ```
-
-This builds Mace, adds it to your app menu and makes the Play button on
-roblox.com open it. If you used Nutmeg before, your settings and login are
-picked up automatically.
 
 In a game, press Insert for the in-game bar (the key can be changed in Mace's
 settings, and `mace panel` opens it too).
@@ -74,6 +81,16 @@ mace why ACCOUNT          # explain why a start failed
 ```
 
 Run `mace --help` for everything else.
+
+## Update
+
+Mace checks for a new version once a day. When there is one, the Mace window
+shows an Update button and your game shows a toast; `mace upgrade` installs it
+from a terminal. Games that are running keep the old version until they're
+restarted.
+
+A copy installed with `./install.sh --dev` doesn't update itself: run
+`git pull` and `./install.sh --dev` again.
 
 ## Uninstall
 

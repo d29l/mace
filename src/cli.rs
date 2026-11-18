@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 
 use crate::accounts::{self, Account};
 use crate::servers;
-use crate::{builds, desktop, doctor, launch, migrate, mods, processes, settings, supervisor};
+use crate::{builds, desktop, doctor, launch, migrate, mods, processes, settings, supervisor, upgrade};
 
 pub const HELP: &str = "mace: macOS Roblox on Linux, with multiple accounts.
 
@@ -34,6 +34,7 @@ pub const HELP: &str = "mace: macOS Roblox on Linux, with multiple accounts.
     mace servers ACCOUNT [--fewest] [--json]
                                   list the game's public servers
     mace panel [ACCOUNT]          toggle the in-game panel
+    mace upgrade                  update Mace itself
     mace --version
 
 ACCOUNT: an id (main, alt1, ...), name, username or display name.
@@ -398,6 +399,19 @@ fn cmd_servers(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn cmd_upgrade(_args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
+    if upgrade::installed_copy().is_none() {
+        bail!("this Mace runs from {}, not the copy install.sh makes: update it with git pull and ./install.sh",
+              launch::mace_exe().display());
+    }
+    writeln!(out, "looking for a newer Mace than {}", crate::VERSION)?;
+    match upgrade::update_now()? {
+        Some(version) => writeln!(out, "Mace {version} installed; games already running keep the old one")?,
+        None => writeln!(out, "Mace {} is up to date", crate::VERSION)?,
+    }
+    Ok(())
+}
+
 fn cmd_panel(args: &[String], _out: &mut dyn Write) -> anyhow::Result<()> {
     let args: Vec<&String> = args.iter().filter(|a| *a != "toggle").collect();
     let account = match args.first() {
@@ -441,6 +455,7 @@ pub fn command(name: &str) -> Option<CommandFn> {
         "integrate" => cmd_integrate,
         "servers" => cmd_servers,
         "panel" => cmd_panel,
+        "upgrade" => cmd_upgrade,
         _ => return None,
     })
 }

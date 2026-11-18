@@ -157,13 +157,34 @@ pub fn install(command: &Path) -> anyhow::Result<Vec<String>> {
     if SCHEMES.iter().all(|scheme| portal_set(scheme, &mine)) {
         done.push("browsers that go through the desktop portal open Mace too".into());
     }
+    update_caches();
+    Ok(done)
+}
+
+fn update_caches() {
     if fsutil::which("update-desktop-database").is_some() {
         let _ = Command::new("update-desktop-database").arg(applications()).output();
     }
     if fsutil::which("gtk-update-icon-cache").is_some() {
         let _ = Command::new("gtk-update-icon-cache").args(["-q", "-t"]).arg(paths::data_home().join("icons/hicolor")).output();
     }
-    Ok(done)
+}
+
+/// After an update: the menu entries and icon as they are now, where they're
+/// installed. Roblox links stay with whatever has them.
+pub fn refresh(command: &Path) -> anyhow::Result<()> {
+    if !applications().join(format!("{APP_ID}.desktop")).is_file() {
+        return Ok(());
+    }
+    for (name, text) in entries(command) {
+        fsutil::write_atomic(&applications().join(&name), text.as_bytes())?;
+    }
+    if paths::logo().exists() {
+        std::fs::create_dir_all(icon_target().parent().unwrap())?;
+        std::fs::copy(paths::logo(), icon_target())?;
+    }
+    update_caches();
+    Ok(())
 }
 
 /// Give Roblox links back to whatever had them before, and remove the entries.
@@ -203,4 +224,27 @@ pub fn uninstall() -> Vec<String> {
         let _ = Command::new("update-desktop-database").arg(applications()).output();
     }
     done
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testenv::TempHome;
+
+    #[test]
+    fn an_update_refreshes_only_what_is_installed() {
+        let _home = TempHome::new();
+        // never integrated (install.sh --no-links): nothing appears
+        refresh(Path::new("/opt/mace")).unwrap();
+        assert!(!applications().exists() && !icon_target().exists());
+        // integrated: the entries and icon are written again; links aren't touched
+        std::fs::create_dir_all(applications()).unwrap();
+        std::fs::write(applications().join(format!("{APP_ID}.desktop")), "old").unwrap();
+        refresh(Path::new("/opt/mace")).unwrap();
+        let entry = std::fs::read_to_string(applications().join(format!("{APP_ID}.desktop"))).unwrap();
+        assert!(entry.contains("Exec=/opt/mace\n"), "{entry}");
+        assert!(applications().join(format!("{APP_ID}.open.desktop")).is_file());
+        assert!(icon_target().is_file());
+        assert!(!state_file().exists());
+    }
 }

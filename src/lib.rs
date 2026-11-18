@@ -19,6 +19,7 @@ pub mod servers;
 pub mod settings;
 pub mod supervisor;
 pub mod ui;
+pub mod upgrade;
 
 #[cfg(test)]
 pub mod testenv;

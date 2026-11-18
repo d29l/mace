@@ -155,6 +155,17 @@ impl GlobalSettings {
         group.add(&loading);
         loading.connect_active_notify({ let c = changed.clone(); move |_| c() });
         self.saver(move |t| t.loading_screen = loading.is_active());
+
+        // only the copy install.sh makes updates itself; a source build is updated with git
+        if crate::upgrade::installed_copy().is_some() {
+            let group = adw::PreferencesGroup::builder().title("Updates").description(format!("Mace {}", crate::VERSION)).build();
+            page.add(&group);
+            let check = adw::SwitchRow::builder().title("Check for updates").subtitle("Once a day")
+                .active(s.check_updates).build();
+            group.add(&check);
+            check.connect_active_notify({ let c = changed.clone(); move |_| c() });
+            self.saver(move |t| t.check_updates = check.is_active());
+        }
     }
 
     /// What few people need: how Roblox is run, and raw FastFlags and environment.

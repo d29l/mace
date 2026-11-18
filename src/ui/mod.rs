@@ -5,6 +5,7 @@ mod account_settings;
 mod loading;
 mod mods_tab;
 mod settings_tabs;
+mod update;
 mod widgets;
 mod window;
 
@@ -67,7 +68,9 @@ pub fn run_window() -> i32 {
             None => window::Window::new(app).present(),
         }
     });
-    exit_code(app.run_with_args::<&str>(&[]))
+    let code = exit_code(app.run_with_args::<&str>(&[]));
+    update::restart_if_asked();
+    code
 }
 
 /// The loading window for one account's start.

@@ -21,10 +21,10 @@ use serde_json::{Map, Value};
 
 use crate::accounts::{self, Account};
 use crate::servers::LogFollower;
-use crate::{cli, fsutil, launch, paths, processes, servers, settings, supervisor};
+use crate::{cli, fsutil, launch, paths, processes, servers, settings, supervisor, upgrade};
 
 pub const LAYER_NAME: &str = "VK_LAYER_MACE_panel";
-const LIBRARY: &str = "libmace_panel.so";
+pub const LIBRARY: &str = "libmace_panel.so";
 
 pub fn socket_path(account_id: &str) -> PathBuf {
     paths::runtime().join(format!("panel-{account_id}.sock"))
@@ -469,6 +469,10 @@ impl Server {
             let shared = shared.clone();
             std::thread::spawn(move || watch_joins(shared));
         }
+        {
+            let shared = shared.clone();
+            std::thread::spawn(move || tell_about_update(&shared));
+        }
         Some(Server { path, shared })
     }
 }
@@ -482,6 +486,20 @@ impl Drop for Server {
 
 fn modified(path: &Path) -> Option<SystemTime> {
     path.metadata().and_then(|m| m.modified()).ok()
+}
+
+/// A toast when a newer Mace is out: a minute into the game, after the join's
+/// own, and once a day at most whatever the number of games.
+fn tell_about_update(shared: &Shared) {
+    std::thread::sleep(Duration::from_secs(60));
+    if shared.stopped.load(Ordering::Relaxed) || !upgrade::announce_due() {
+        return;
+    }
+    let Some(version) = upgrade::available() else { return };
+    let toast = ToPanel::Toast { title: format!("Mace {version} is out"), body: "Open Mace to update".into() };
+    if shared.to_panels(&toast) {
+        upgrade::announced();
+    }
 }
 
 /// "Joined Flex Your FPS" / "Server in Frankfurt am Main, Hesse, DE".

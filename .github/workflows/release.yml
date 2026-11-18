@@ -1,0 +1,57 @@
+# Build the release download for every v* tag (dev/release.sh makes them) and
+# publish it; installed copies of Mace offer it within a day. Run it by hand
+# to build without publishing: the download is kept with the run.
+#
+# Built on Ubuntu 24.04, whose glibc, GTK and libadwaita are the oldest Mace
+# supports, so the program runs on that and anything newer.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag is Cargo.toml's version
+        if: github.ref_type == 'tag'
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "the tag is $GITHUB_REF_NAME but Cargo.toml says $version" >&2
+            exit 1
+          fi
+
+      - name: Install GTK and libadwaita
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev libadwaita-1-dev
+
+      - name: Update Rust
+        run: rustup update stable && rustup default stable
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Package
+        run: dev/package.sh dist
+
+      - name: Keep the download with the run
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mace-x86_64-linux
+          path: dist/
+
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "Mace ${GITHUB_REF_NAME#v}" --generate-notes

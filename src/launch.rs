@@ -247,7 +247,16 @@ fn spawn_detached(argv: &[String], env: Option<&Env>, log: Option<&Path>) -> any
 }
 
 pub fn mace_exe() -> PathBuf {
-    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mace"))
+    std::env::current_exe().map(still_here).unwrap_or_else(|_| PathBuf::from("mace"))
+}
+
+/// A program replaced on disk while it runs (an update) reads as "…/mace
+/// (deleted)"; the new one is at the same path.
+fn still_here(path: PathBuf) -> PathBuf {
+    match path.to_str().and_then(|p| p.strip_suffix(" (deleted)")) {
+        Some(p) => PathBuf::from(p),
+        None => path,
+    }
 }
 
 /// Give a running client a link, so it moves to that server without closing.
@@ -417,6 +426,12 @@ mod tests {
     use super::*;
     use crate::testenv::TempHome;
     use serde_json::json;
+
+    #[test]
+    fn a_program_replaced_while_running_is_found_at_its_path() {
+        assert_eq!(still_here("/usr/local/bin/mace (deleted)".into()), PathBuf::from("/usr/local/bin/mace"));
+        assert_eq!(still_here("/usr/local/bin/mace".into()), PathBuf::from("/usr/local/bin/mace"));
+    }
 
     fn setup(home: &TempHome) -> (Account, Account) {
         let runner = home.fake_runner("#!/bin/sh\nexit 0\n");
