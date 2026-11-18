@@ -387,10 +387,9 @@ fn cmd_servers(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
         bail!("{}", page.error);
     }
     for s in &page.list {
-        let fps = s.fps.map(|f| format!("{:.0} FPS", f)).unwrap_or_default();
         let ping = s.ping.map(|p| format!("~{p} ms")).unwrap_or_default();
         let mark = if s.id == here { "  (you're here)" } else { "" };
-        writeln!(out, "{:>3}/{:<3} {:>7} {:>8}  {}  {}{}", s.playing, s.max, fps, ping, s.id,
+        writeln!(out, "{:>3}/{:<3} {:>8}  {}  {}{}", s.playing, s.max, ping, s.id,
                  s.location.as_deref().unwrap_or(""), mark)?;
     }
     if page.next.is_some() {

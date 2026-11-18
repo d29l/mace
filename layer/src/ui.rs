@@ -954,18 +954,20 @@ fn server_row(ui: &mut EUi, c: Colors, s: &PublicServer, here: bool) -> Response
     let filled = if s.max > 0 { (s.playing as f32 / s.max as f32).clamp(0.0, 1.0) } else { 0.0 };
     ui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * filled, bar.height())), CornerRadius::same(3), c.accent);
     ui.painter().text(pos2(bar.min.x, inner.max.y), Align2::LEFT_BOTTOM, format!("{}/{}", s.playing, s.max), regular(12.5), c.subtext);
-    let mut facts = Vec::new();
-    if let Some(fps) = s.fps {
-        facts.push(format!("{} FPS", fps.round() as i64));
-    }
-    if let Some(ping) = s.ping {
-        facts.push(format!("~{ping} ms"));
-    }
+    // the server's id; under it the ping, and the place when one of your accounts has been there
+    let mut facts: Vec<String> = s.ping.map(|ping| format!("~{ping} ms")).into_iter().collect();
+    facts.extend(s.location.as_deref().map(plain_location).filter(|p| !p.is_empty()));
+    let facts = facts.join(" · ");
     let middle = pos2(inner.min.x + 96.0, inner.center().y);
-    ui.painter().text(middle - vec2(0.0, 8.0), Align2::LEFT_CENTER, facts.join(" · "), regular(13.5), c.text);
-    let place = s.location.as_deref().map(plain_location).unwrap_or_default();
-    if !place.is_empty() {
-        ui.painter().text(middle + vec2(0.0, 9.0), Align2::LEFT_CENTER, place, regular(12.5), c.subtext);
+    // up to the row's end, or to "Current"
+    let width = inner.max.x - middle.x - if here { 72.0 } else { 0.0 };
+    let painter = ui.painter();
+    let id_at = if facts.is_empty() { 0.0 } else { -8.0 };
+    for (text, font, color, dy) in [(s.id.as_str(), regular(13.5), c.text, id_at), (facts.as_str(), regular(12.5), c.subtext, 9.0)] {
+        if !text.is_empty() {
+            let galley = line(painter, text, font, color, width);
+            painter.galley(middle + vec2(0.0, dy - galley.size().y / 2.0), galley, color);
+        }
     }
     if here {
         ui.painter().text(pos2(inner.max.x, inner.center().y), Align2::RIGHT_CENTER, "Current", bold(12.5), c.text);
