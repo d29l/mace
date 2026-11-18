@@ -86,6 +86,9 @@ pub struct Settings {
     /// Frames per second for Roblox windows you aren't using (all but the last one focused); 0 = no limit.
     pub background_fps: u64,
     /// Nudge idle games now and then so Roblox doesn't kick them after 20 minutes.
+    /// Off unless turned on, since it sends input to the game. Saved under a new
+    /// name: 0.1.0 had it on by default and saved that as `anti_afk`.
+    #[serde(rename = "anti_afk_opt_in")]
     pub anti_afk: bool,
     /// Ask GitHub once a day for a newer Mace (only the copy install.sh puts in ~/.local/bin updates itself).
     pub check_updates: bool,
@@ -116,7 +119,7 @@ impl Default for Settings {
             panel: true,
             panel_blur: false,
             background_fps: 10,
-            anti_afk: true,
+            anti_afk: false,
             check_updates: true,
             overlay_key: "INSERT".into(),
             accounts: Map::new(),
@@ -275,7 +278,7 @@ impl Settings {
             panel: truthy(get("panel"), d.panel),
             panel_blur: truthy(get("panel_blur"), d.panel_blur),
             background_fps: as_u64(get("background_fps"), d.background_fps).min(1000),
-            anti_afk: truthy(get("anti_afk"), d.anti_afk),
+            anti_afk: truthy(get("anti_afk_opt_in"), d.anti_afk),
             check_updates: truthy(get("check_updates"), d.check_updates),
             overlay_key: text(get("overlay_key")).trim().to_string(),
             accounts,
@@ -432,6 +435,16 @@ pub fn from_nutmeg(config: &Value) -> Settings {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn anti_afk_is_off_until_chosen() {
+        assert!(!Settings::default().anti_afk);
+        // 0.1.0 saved its on-by-default value under the old name: not a choice, so it's dropped
+        assert!(!Settings::from_stored(&json!({ "anti_afk": true })).anti_afk);
+        let chosen = Settings::from_stored(&json!({ "anti_afk_opt_in": true }));
+        assert!(chosen.anti_afk);
+        assert_eq!(serde_json::to_value(&chosen).unwrap()["anti_afk_opt_in"], json!(true));
+    }
 
     #[test]
     fn defaults_when_missing() {

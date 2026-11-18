@@ -127,7 +127,8 @@ impl GlobalSettings {
         let group = adw::PreferencesGroup::builder().title("Background").build();
         page.add(&group);
         let background = spin("Background frame rate", s.background_fps, 1000.0, "Accounts you're not using. 0 = no limit");
-        let afk = adw::SwitchRow::builder().title("Anti-AFK").subtitle("Stops the 20-minute idle kick")
+        let afk = adw::SwitchRow::builder().title("Anti-AFK")
+            .subtitle("Sends input to idle games so Roblox doesn't kick them. This may break Roblox's rules and get accounts banned.")
             .active(s.anti_afk).build();
         group.add(&background);
         group.add(&afk);

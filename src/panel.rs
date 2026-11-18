@@ -710,6 +710,9 @@ mod tests {
         settings::save(&settings::Settings { background_fps: 12, ..Default::default() }).unwrap();
         // nobody focused yet: every game may be slowed while in the background
         assert_eq!(config("main").background_fps, 12);
+        // anti-AFK only when chosen
+        assert!(!config("main").anti_afk);
+        settings::save(&settings::Settings { background_fps: 12, anti_afk: true, ..Default::default() }).unwrap();
         assert!(config("main").anti_afk);
         std::fs::create_dir_all(paths::runtime()).unwrap();
         fsutil::write_atomic(&focused_file(), b"alt1").unwrap();
