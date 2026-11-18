@@ -16,6 +16,7 @@
 //!   cursor show|hide
 //!   resize W H
 //!   dump NAME                     ask the panel to save this frame as NAME.png
+//!   focus gained|lost            the window gains or loses keyboard focus
 //!   quit
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
@@ -77,6 +78,8 @@ const WINDOW_RESIZABLE: u64 = 0x20;
 const WINDOW_VULKAN: u64 = 0x1000_0000;
 const QUIT: u32 = 0x100;
 const PIXEL_SIZE_CHANGED: u32 = 0x207;
+const WINDOW_FOCUS_GAINED: u32 = 0x20e;
+const WINDOW_FOCUS_LOST: u32 = 0x20f;
 const KEY_DOWN: u32 = 0x300;
 const KEY_UP: u32 = 0x301;
 const MOUSE_MOTION: u32 = 0x400;
@@ -117,7 +120,7 @@ impl Event {
                 "\"ev\":\"{}\",\"scancode\":{},\"mod\":{},\"repeat\":{}",
                 if self.kind() == KEY_DOWN { "key_down" } else { "key_up" },
                 self.get::<u32>(24), self.get::<u16>(32), self.get::<u8>(37) != 0),
-            MOUSE_MOTION => format!("\"ev\":\"motion\",\"x\":{},\"y\":{}", self.get::<f32>(28), self.get::<f32>(32)),
+            MOUSE_MOTION => format!("\"ev\":\"motion\",\"x\":{},\"y\":{},\"xrel\":{}", self.get::<f32>(28), self.get::<f32>(32), self.get::<f32>(36)),
             MOUSE_BUTTON_DOWN | MOUSE_BUTTON_UP => format!(
                 "\"ev\":\"{}\",\"button\":{},\"x\":{},\"y\":{}",
                 if self.kind() == MOUSE_BUTTON_DOWN { "button_down" } else { "button_up" },
@@ -241,6 +244,7 @@ fn main() {
     let mut last_state = (None, None);
     let mut event = Event([0; 128]);
     let began = std::time::Instant::now();
+    let mut second = began;
     loop {
         let now = frame.load(Ordering::Relaxed);
         // SAFETY: SDL event calls on the main thread with a 128-byte event buffer.
@@ -261,6 +265,11 @@ fn main() {
         if state != last_state {
             log.line(now, &format!("\"ev\":\"state\",\"relative\":{},\"cursor\":{}", state.0.unwrap(), state.1.unwrap()));
             last_state = state;
+        }
+        // the frame count once a second, for tests of frame pacing
+        if second.elapsed() >= std::time::Duration::from_secs(1) {
+            second = std::time::Instant::now();
+            log.line(now, &format!("\"ev\":\"second\",\"t\":{:.2}", began.elapsed().as_secs_f64()));
         }
         if let Some(gpu) = gpu.as_mut() {
             let s = size.load(Ordering::Relaxed);
@@ -350,6 +359,11 @@ fn run_step(sdl: &Sdl, window: Window, id: u32, step: &[String], log: &Log, fram
                 let name = CString::new(step.get(1).cloned().unwrap_or_default()).unwrap();
                 e.put(24, name.into_raw() as usize);
                 push(e);
+            }
+            Some("focus") => {
+                // what the compositor's keyboard enter / leave turns into
+                let gained = step.get(1).is_some_and(|s| s == "gained");
+                push(Event::new(if gained { WINDOW_FOCUS_GAINED } else { WINDOW_FOCUS_LOST }, id, now));
             }
             Some("quit") => stop.store(true, Ordering::Relaxed),
             _ => {}

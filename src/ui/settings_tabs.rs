@@ -124,6 +124,18 @@ impl GlobalSettings {
         self.saver(move |t| t.refresh_rate = refresh.value() as u64);
         self.saver(move |t| t.presentation_mode = chosen(&mode, &modes));
 
+        let group = adw::PreferencesGroup::builder().title("Background").build();
+        page.add(&group);
+        let background = spin("Background frame rate", s.background_fps, 1000.0, "Accounts you're not using. 0 = no limit");
+        let afk = adw::SwitchRow::builder().title("Anti-AFK").subtitle("Stops the 20-minute idle kick")
+            .active(s.anti_afk).build();
+        group.add(&background);
+        group.add(&afk);
+        background.connect_value_notify({ let c = changed.clone(); move |_| c() });
+        afk.connect_active_notify({ let c = changed.clone(); move |_| c() });
+        self.saver(move |t| t.background_fps = background.value() as u64);
+        self.saver(move |t| t.anti_afk = afk.is_active());
+
         let group = adw::PreferencesGroup::builder().title("Controls").build();
         page.add(&group);
         let edit = adw::SwitchRow::builder().title("Ctrl for copy and paste")

@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use mace_proto::{Config, ServerPage, State, ToMace, ToPanel};
 
-use crate::{detail, panel};
+use crate::{detail, pace, panel};
 
 /// An account's picture: size and RGBA pixels.
 pub type Avatar = Arc<(u32, Vec<u8>)>;
@@ -80,6 +80,7 @@ fn receive(message: ToPanel) {
     match message {
         ToPanel::Config(config) => {
             panel::INPUT.set_hotkey(config.key);
+            pace::configure(config.background_fps, config.anti_afk);
             with(|d| d.config = Some(config));
         }
         ToPanel::State(state) => with(|d| d.state = Some(Arc::new(state))),

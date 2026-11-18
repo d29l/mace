@@ -18,6 +18,7 @@ mod debug;
 pub mod input;
 mod hooks;
 mod loader;
+mod pace;
 mod panel;
 mod render;
 mod sdl;

@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 
 use crate::accounts::{self, Account};
 use crate::servers;
-use crate::{builds, desktop, doctor, launch, migrate, processes, settings, supervisor};
+use crate::{builds, desktop, doctor, launch, migrate, mods, processes, settings, supervisor};
 
 pub const HELP: &str = "mace: macOS Roblox on Linux, with multiple accounts.
 
@@ -325,6 +325,9 @@ fn cmd_update(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
         }
         let bundle = builds::provision(&account, &build, &mut bar)?;
         builds::write_fast_flags(&bundle, &config.for_account(&account.id).fast_flags)?;
+        if let Err(error) = mods::apply(&account) {
+            eprintln!("{}: mods not applied: {error:#}", account.name());
+        }
         writeln!(out, "{}: Roblox {} ({}) installed", account.name(), build.version, build.channel)?;
     }
     Ok(())

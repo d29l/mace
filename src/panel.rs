@@ -277,10 +277,23 @@ pub fn theme() -> Theme {
     }
 }
 
+/// Where the account whose Roblox window was focused last is written down, so
+/// every other account's game knows it runs in the background.
+pub fn focused_file() -> PathBuf {
+    paths::runtime().join("focused")
+}
+
+/// The account whose Roblox window had focus last, if any did.
+pub fn last_focused() -> Option<String> {
+    std::fs::read_to_string(focused_file()).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
 fn config(me: &str) -> Config {
     let s = settings::load();
+    // the game you used last keeps its full frame rate even while you're in another app
+    let background_fps = if last_focused().as_deref() == Some(me) { 0 } else { s.background_fps.min(u32::MAX as u64) as u32 };
     Config { me: me.to_string(), key: parse_key(&s.overlay_key).unwrap_or_default(), theme: theme(),
-             can_focus: *processes::HYPRLAND, blur: s.panel_blur }
+             can_focus: *processes::HYPRLAND, blur: s.panel_blur, background_fps, anti_afk: s.anti_afk }
 }
 
 /// Every account, as the panel shows them.
@@ -581,7 +594,7 @@ fn connection(stream: UnixStream, shared: Arc<Shared>) {
         let (writer, open, me) = (writer.clone(), open.clone(), me.clone());
         move || {
             std::thread::spawn(move || {
-                let files = [paths::settings_file(), paths::config().join("theme.json")];
+                let files = [paths::settings_file(), paths::config().join("theme.json"), focused_file()];
                 let mut seen: Vec<Option<SystemTime>> = Vec::new();
                 while open.load(Ordering::Relaxed) {
                     let now: Vec<_> = files.iter().map(|f| modified(f)).collect();
@@ -591,7 +604,7 @@ fn connection(stream: UnixStream, shared: Arc<Shared>) {
                             return;
                         }
                     }
-                    std::thread::sleep(Duration::from_secs(2));
+                    std::thread::sleep(Duration::from_secs(1));
                 }
             });
         }
@@ -624,6 +637,9 @@ fn connection(stream: UnixStream, shared: Arc<Shared>) {
                     send(&writer, &ToPanel::Done { id, ok, error });
                     ask_state();
                 });
+            }
+            ToMace::Event { what } if what == "focused" => {
+                let _ = fsutil::write_atomic(&focused_file(), me.as_bytes());
             }
             ToMace::Event { .. } => {}
             ToMace::Toggle => {
@@ -669,6 +685,22 @@ pub fn toast(account_id: &str, title: &str, body: &str) -> bool {
 mod tests {
     use super::*;
     use mace_proto::{MOD_CTRL, MOD_SHIFT, MOD_SUPER};
+
+    #[test]
+    fn the_game_used_last_keeps_its_frame_rate() {
+        let _home = crate::testenv::TempHome::new();
+        settings::save(&settings::Settings { background_fps: 12, ..Default::default() }).unwrap();
+        // nobody focused yet: every game may be slowed while in the background
+        assert_eq!(config("main").background_fps, 12);
+        assert!(config("main").anti_afk);
+        std::fs::create_dir_all(paths::runtime()).unwrap();
+        fsutil::write_atomic(&focused_file(), b"alt1").unwrap();
+        assert_eq!(config("alt1").background_fps, 0);
+        assert_eq!(config("main").background_fps, 12);
+        // a panel from before these settings still reads the config
+        let old: Config = serde_json::from_str(r#"{"me":"main","key":{"scancode":73,"mods":0},"theme":{"background":"","surface":"","surface_hover":"","border":"","text":"","subtext":"","accent":"","on_accent":"","danger":""},"can_focus":false}"#).unwrap();
+        assert_eq!((old.background_fps, old.anti_afk), (0, false));
+    }
 
     #[test]
     fn keys_read_like_the_settings_write_them() {

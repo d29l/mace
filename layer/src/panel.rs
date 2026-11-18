@@ -10,7 +10,7 @@ use mace_proto::ToMace;
 
 use crate::input::{Input, UiEvent};
 use crate::ui::{Action, Ui};
-use crate::{client, debug, note, sdl};
+use crate::{client, debug, note, pace, sdl};
 
 pub static INPUT: Input = Input::new();
 
@@ -92,6 +92,7 @@ pub fn activate() {
             v: mace_proto::VERSION, pid, video: video_driver(), swapchain: String::new(),
         });
     }
+    pace::start(|| INPUT.captured.load(Ordering::Relaxed));
     sdl::schedule_tick();
 }
 

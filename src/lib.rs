@@ -10,6 +10,7 @@ pub mod fsutil;
 pub mod launch;
 pub mod links;
 pub mod migrate;
+pub mod mods;
 pub mod panel;
 pub mod paths;
 pub mod processes;

@@ -55,6 +55,13 @@ pub struct Config {
     /// Blur the game behind the open panel (otherwise it's only dimmed).
     #[serde(default)]
     pub blur: bool,
+    /// Frames per second while the window isn't focused; 0 = no limit (Mace
+    /// sends 0 to the account you used last).
+    #[serde(default)]
+    pub background_fps: u32,
+    /// Nudge the game when it has been idle a while, so Roblox doesn't kick it.
+    #[serde(default)]
+    pub anti_afk: bool,
 }
 
 /// A key and its modifiers, by physical position (SDL scancodes).

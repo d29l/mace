@@ -11,6 +11,7 @@ use adw::prelude::*;
 use gtk::{gdk, glib};
 use serde_json::{Map, Value};
 
+use super::mods_tab::ModsTab;
 use super::settings_tabs::GlobalSettings;
 use super::widgets::{background, markup};
 use super::account_settings;
@@ -35,6 +36,7 @@ pub struct Window {
     group: adw::PreferencesGroup,
     stack: gtk::Stack,
     settings: Rc<GlobalSettings>,
+    _mods: Rc<ModsTab>,
     rows: RefCell<Vec<Rc<AccountRow>>>,
     followers: Arc<Mutex<HashMap<String, LogFollower>>>,
     busy: Cell<bool>,
@@ -68,17 +70,22 @@ impl Window {
         stack.add_named(&empty, Some("empty"));
         tabs.add_titled_with_icon(&stack, Some("accounts"), "Accounts", "system-users-symbolic");
         let settings = GlobalSettings::new();
+        let toasts = adw::ToastOverlay::new();
         tabs.add_titled_with_icon(&settings.general, Some("general"), "General", "emblem-system-symbolic");
+        let mods = ModsTab::new({
+            let toasts = toasts.clone();
+            move |text| toasts.add_toast(adw::Toast::new(text))
+        });
+        tabs.add_titled_with_icon(&mods.page, Some("mods"), "Mods", "application-x-addon-symbolic");
         tabs.add_titled_with_icon(&settings.advanced, Some("advanced"), "Advanced", "preferences-other-symbolic");
 
-        let toasts = adw::ToastOverlay::new();
         toasts.set_child(Some(&tabs));
         let view = adw::ToolbarView::new();
         view.add_top_bar(&header);
         view.set_content(Some(&toasts));
         window.set_content(Some(&view));
 
-        let me = Rc::new(Window { window: window.clone(), toasts, group, stack, settings, rows: RefCell::new(Vec::new()),
+        let me = Rc::new(Window { window: window.clone(), toasts, group, stack, settings, _mods: mods, rows: RefCell::new(Vec::new()),
                                   followers: Arc::new(Mutex::new(HashMap::new())), busy: Cell::new(false) });
         for button in [&add, &empty_add] {
             let weak = Rc::downgrade(&me);

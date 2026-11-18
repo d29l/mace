@@ -13,7 +13,7 @@ use regex::Regex;
 use crate::accounts::{self, Account};
 use crate::builds::{self, Build};
 use crate::settings::{self, Settings};
-use crate::{fsutil, links, panel, paths, processes, runner, servers, supervisor};
+use crate::{fsutil, links, mods, panel, paths, processes, runner, servers, supervisor};
 
 /// Variables Mace sets from its settings. Inherited values are dropped first,
 /// so an account never picks up another launcher's (or another account's) choice.
@@ -187,6 +187,10 @@ pub fn prepare(account: &Account, progress: &mut dyn FnMut(u64, u64), config: &S
         None => bail!("can't look up the Roblox version (offline?)"),
     };
     builds::write_fast_flags(&bundle, &s.fast_flags)?;
+    // a broken mod never stops a start
+    if let Err(error) = mods::apply(account) {
+        supervisor::note_for(&account.id, &format!("mods not applied: {error:#}"));
+    }
     if s.fps_cap > 0 {
         set_framerate_cap(account, s.fps_cap);
     }

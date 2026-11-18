@@ -3,6 +3,7 @@
 
 mod account_settings;
 mod loading;
+mod mods_tab;
 mod settings_tabs;
 mod widgets;
 mod window;

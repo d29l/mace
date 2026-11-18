@@ -11,7 +11,7 @@ use ash::vk::Handle;
 
 use crate::loader::{self, LayerDeviceCreateInfo, LayerDeviceLink, LayerInstanceCreateInfo, LayerInstanceLink, key};
 use crate::render::Swapchain;
-use crate::{guard, note, panel, render, void_fn};
+use crate::{guard, note, pace, panel, render, void_fn};
 
 pub struct Instance {
     pub handle: vk::Instance,
@@ -313,6 +313,10 @@ unsafe extern "system" fn queue_present(queue: vk::Queue, info: *const vk::Prese
     // our semaphore instead (which our submission signals after waiting on the game's).
     unsafe {
         let Some(dev) = device_of(key(queue)) else { return vk::Result::ERROR_DEVICE_LOST };
+        if dev.active {
+            // a game in the background waits here for its next frame slot
+            pace::before_present(panel::INPUT.captured.load(std::sync::atomic::Ordering::Relaxed));
+        }
         if !dev.active || !panel::visible() {
             return (dev.swap.queue_present_khr)(queue, info);
         }

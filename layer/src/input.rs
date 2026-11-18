@@ -19,6 +19,8 @@ use mace_proto::{Key, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_SUPER};
 pub const QUIT: u32 = 0x100;
 pub const WINDOW_RESIZED: u32 = 0x206;
 pub const WINDOW_PIXEL_SIZE_CHANGED: u32 = 0x207;
+pub const WINDOW_FOCUS_GAINED: u32 = 0x20e;
+pub const WINDOW_FOCUS_LOST: u32 = 0x20f;
 pub const KEY_DOWN: u32 = 0x300;
 pub const KEY_UP: u32 = 0x301;
 pub const TEXT_EDITING: u32 = 0x302;
@@ -34,6 +36,8 @@ pub const USER: u32 = 0x8000;
 pub const DUMP_CODE: i32 = 0x4d41_4345;
 
 pub const SCANCODE_ESCAPE: u32 = 41;
+/// Pressed and let go by anti-AFK: a key no game uses.
+pub const SCANCODE_F13: u32 = 104;
 
 /// An `SDL_Event`: 128 bytes, read at the offsets SDL3's headers give.
 #[repr(C, align(8))]
@@ -172,6 +176,11 @@ pub struct Input {
 thread_local! {
     /// Set while the panel itself pushes events (releases for the game), which pass untouched.
     static SYNTHETIC: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The event being filtered is one the panel pushed itself.
+pub fn is_synthetic() -> bool {
+    SYNTHETIC.with(Cell::get)
 }
 
 /// Run `f` with the panel's own events passing the filter.

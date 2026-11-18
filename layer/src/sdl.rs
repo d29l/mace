@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use crate::input::{self, Event, Held};
-use crate::{guard, note, panel};
+use crate::{guard, note, pace, panel};
 
 type Window = *mut c_void;
 type EventFilter = unsafe extern "C" fn(*mut c_void, *mut Event) -> bool;
@@ -117,6 +117,13 @@ unsafe extern "C" fn filter(_: *mut c_void, event: *mut Event) -> bool {
             }
             return true;
         }
+        match e.kind() {
+            input::WINDOW_FOCUS_GAINED => pace::focus(true),
+            input::WINDOW_FOCUS_LOST => pace::focus(false),
+            input::MOUSE_MOTION if !input::is_synthetic() => pace::input_seen(Some(e.get::<u32>(20))),
+            input::KEY_DOWN | input::MOUSE_BUTTON_DOWN | input::MOUSE_WHEEL if !input::is_synthetic() => pace::input_seen(None),
+            _ => {}
+        }
         panel::INPUT.filter(e)
     });
     IN_FILTER.with(|f| f.set(false));
@@ -215,6 +222,10 @@ fn main_tick() {
     // SAFETY: SDL window and mouse calls, on the main thread (where this runs).
     unsafe {
         input.window.store((s.window_id)(window), Ordering::Relaxed);
+        pace::seed_focus(!(s.keyboard_focus)().is_null());
+        if pace::take_nudge() {
+            nudge(s, input.window.load(Ordering::Relaxed));
+        }
         let (mut w, mut h) = (0, 0);
         if (s.window_size)(window, &mut w, &mut h) {
             input.set_points(w as f32, h as f32);
@@ -292,4 +303,40 @@ fn release(s: &Sdl, window: u32, held: Vec<Held>) {
             input::synthetic(|| (s.push_event)(&mut e));
         }
     }
+}
+
+/// Anti-AFK: what an idle player's hand on the mouse would do, through the
+/// game's own event queue. The pointer moves a pixel and back, and F13 (which
+/// no game uses) is pressed and let go. Nothing reaches the desktop.
+fn nudge(s: &Sdl, window: u32) {
+    // SAFETY: fully initialised 128-byte events pushed onto SDL's queue, on the main thread.
+    unsafe {
+        let (mut x, mut y) = (0.0f32, 0.0f32);
+        let buttons = (s.mouse_state)(&mut x, &mut y);
+        let now = (s.ticks_ns)();
+        let mut events = Vec::new();
+        for (step, dx) in [1.0f32, -1.0].into_iter().enumerate() {
+            let mut e = Event::new(input::MOUSE_MOTION);
+            e.put(20, pace::mouse_id());
+            e.put(24, buttons);
+            e.put(28, if dx > 0.0 { x + 1.0 } else { x });
+            e.put(32, y);
+            e.put(36, dx);
+            e.put(40, 0.0f32);
+            events.push((step as u64, e));
+        }
+        for (step, down) in [(2u64, true), (3, false)] {
+            let mut e = Event::new(if down { input::KEY_DOWN } else { input::KEY_UP });
+            e.put(24, input::SCANCODE_F13);
+            e.put(28, (s.key_from_scancode)(input::SCANCODE_F13, 0, true));
+            e.put(36, down as u8);
+            events.push((step, e));
+        }
+        for (step, mut e) in events {
+            e.put(8, now + step);
+            e.put(16, window);
+            input::synthetic(|| (s.push_event)(&mut e));
+        }
+    }
+    note!("anti-AFK");
 }
