@@ -18,6 +18,8 @@ use crate::{builds, fsutil, paths};
 /// Roblox's mouse pointer (the "far" one is shown over the 3D world).
 pub const CURSORS: [&str; 2] =
     ["content/textures/Cursors/KeyboardMouse/ArrowCursor.png", "content/textures/Cursors/KeyboardMouse/ArrowFarCursor.png"];
+/// The cursor shift lock shows, unless the game sets its own.
+pub const SHIFT_LOCK: &str = "content/textures/MouseLockedCursor.png";
 /// The sound a character makes when it dies.
 pub const DEATH_SOUND: &str = "content/sounds/ouch.ogg";
 /// A font for all of Roblox's text: every font family is pointed at it.
@@ -69,9 +71,10 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>) {
     }
 }
 
-/// The mods that aren't one of the named ones (cursor, death sound, font).
+/// The mods that aren't one of the named ones (cursors, death sound, font).
 pub fn other_files() -> Vec<String> {
-    files().into_iter().filter(|f| !CURSORS.contains(&f.as_str()) && f != DEATH_SOUND && f != FONT).collect()
+    files().into_iter().filter(|f| !CURSORS.contains(&f.as_str()) && ![SHIFT_LOCK, DEATH_SOUND, FONT].contains(&f.as_str()))
+        .collect()
 }
 
 pub fn has(rel: &str) -> bool {
@@ -379,6 +382,15 @@ mod tests {
             assert!(arrow.len() > 100 && far.len() > 100);
         }
         assert!(fetch_cursor_preset("1999").is_err());
+    }
+
+    #[test]
+    fn named_mods_have_their_own_rows() {
+        let _home = TempHome::new();
+        for rel in [CURSORS[0], CURSORS[1], SHIFT_LOCK, DEATH_SOUND, FONT, "content/textures/other.png"] {
+            put(rel, b"x").unwrap();
+        }
+        assert_eq!(other_files(), vec!["content/textures/other.png".to_string()]);
     }
 
     #[test]

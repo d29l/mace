@@ -27,8 +27,8 @@ prefix, so you can play on several of them at the same time.
   and alts, on any desktop
 - Accounts you aren't using run at a lower frame rate, and anti-AFK keeps
   idle ones from being kicked
-- Mods for every account: cursor, death sound, font, and any other file, in
-  the same layout as Bloxstrap's mods folder
+- Mods for every account: cursor, shift lock cursor, death sound, font, and
+  any other file, in the same layout as Bloxstrap's mods folder
 - A loading window, and toasts in the game when you join, saying where the
   server is
 - FastFlags, GameMode, MangoHud and per-account settings

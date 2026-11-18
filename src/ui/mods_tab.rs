@@ -1,4 +1,4 @@
-//! The Mods tab: Roblox's cursor, death sound and font, and any other files
+//! The Mods tab: Roblox's cursors, death sound and font, and any other files
 //! in the mods folder. Mods are for every account and go in at each start.
 
 use std::cell::{Cell, RefCell};
@@ -13,12 +13,18 @@ use crate::mods;
 
 /// Roblox's cursor images are this square, with the pointer at their centre.
 const CURSOR_SIZE: i32 = 64;
+/// Shift lock's cursor is smaller, and centred the same way.
+const SHIFT_LOCK_SIZE: i32 = 32;
 const CURSOR_CHOICES: [&str; 4] = ["Default", "2006", "2013", "Custom"];
+const PICTURES: [&str; 5] = ["png", "jpg", "jpeg", "svg", "webp"];
 
 pub struct ModsTab {
     pub page: adw::PreferencesPage,
     cursor: adw::ComboRow,
     preview: gtk::Image,
+    shift_lock: adw::ActionRow,
+    shift_lock_preview: gtk::Image,
+    shift_lock_reset: gtk::Button,
     sound: adw::ActionRow,
     sound_reset: gtk::Button,
     font: adw::ActionRow,
@@ -38,20 +44,20 @@ fn choose_button() -> gtk::Button {
     gtk::Button::builder().label("Choose…").valign(gtk::Align::Center).build()
 }
 
-/// A picture as Roblox's cursor: kept as it is when it's already a square PNG
-/// of the right size, otherwise scaled to fit and centred.
-fn cursor_png(path: &Path) -> anyhow::Result<Vec<u8>> {
+/// A picture as one of Roblox's cursors, `size` square: kept as it is when
+/// it's already a PNG that size, otherwise scaled to fit and centred.
+fn cursor_png(path: &Path, size: i32) -> anyhow::Result<Vec<u8>> {
     let bytes = std::fs::read(path)?;
     let (format, w, h) = gdk_pixbuf::Pixbuf::file_info(path).ok_or_else(|| anyhow::anyhow!("not a picture"))?;
-    if format.name().is_some_and(|n| n == "png") && w == CURSOR_SIZE && h == CURSOR_SIZE {
+    if format.name().is_some_and(|n| n == "png") && w == size && h == size {
         return Ok(bytes);
     }
-    let scaled = gdk_pixbuf::Pixbuf::from_file_at_scale(path, CURSOR_SIZE, CURSOR_SIZE, true)?;
-    let canvas = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, true, 8, CURSOR_SIZE, CURSOR_SIZE)
+    let scaled = gdk_pixbuf::Pixbuf::from_file_at_scale(path, size, size, true)?;
+    let canvas = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, true, 8, size, size)
         .ok_or_else(|| anyhow::anyhow!("out of memory"))?;
     canvas.fill(0);
     let (sw, sh) = (scaled.width(), scaled.height());
-    scaled.copy_area(0, 0, sw, sh, &canvas, (CURSOR_SIZE - sw) / 2, (CURSOR_SIZE - sh) / 2);
+    scaled.copy_area(0, 0, sw, sh, &canvas, (size - sw) / 2, (size - sh) / 2);
     Ok(canvas.save_to_bufferv("png", &[])?)
 }
 
@@ -69,6 +75,12 @@ impl ModsTab {
         let cursor = adw::ComboRow::builder().title("Cursor").model(&gtk::StringList::new(&CURSOR_CHOICES)).build();
         let preview = gtk::Image::builder().pixel_size(32).visible(false).build();
         cursor.add_suffix(&preview);
+        let shift_lock = adw::ActionRow::builder().title("Shift lock cursor").build();
+        let shift_lock_preview = gtk::Image::builder().pixel_size(SHIFT_LOCK_SIZE).visible(false).build();
+        let (shift_lock_choose, shift_lock_reset) = (choose_button(), icon_button("edit-undo-symbolic", "Back to Roblox's own"));
+        shift_lock.add_suffix(&shift_lock_preview);
+        shift_lock.add_suffix(&shift_lock_reset);
+        shift_lock.add_suffix(&shift_lock_choose);
         let sound = adw::ActionRow::builder().title("Death sound").build();
         let (sound_choose, sound_reset) = (choose_button(), icon_button("edit-undo-symbolic", "Back to Roblox's own"));
         sound.add_suffix(&sound_reset);
@@ -78,6 +90,7 @@ impl ModsTab {
         font.add_suffix(&font_reset);
         font.add_suffix(&font_choose);
         group.add(&cursor);
+        group.add(&shift_lock);
         group.add(&sound);
         group.add(&font);
 
@@ -90,8 +103,8 @@ impl ModsTab {
         page.add(&files);
 
         let me = Rc::new(ModsTab {
-            page, cursor, preview, sound, sound_reset, font, font_reset, files,
-            rows: RefCell::new(Vec::new()), quiet: Cell::new(false), toast: Box::new(toast),
+            page, cursor, preview, shift_lock, shift_lock_preview, shift_lock_reset, sound, sound_reset, font, font_reset,
+            files, rows: RefCell::new(Vec::new()), quiet: Cell::new(false), toast: Box::new(toast),
         });
 
         let weak = Rc::downgrade(&me);
@@ -100,6 +113,24 @@ impl ModsTab {
                 && !me.quiet.get()
             {
                 me.cursor_chosen(row.selected());
+            }
+        });
+        let weak = Rc::downgrade(&me);
+        shift_lock_choose.connect_clicked(move |_| {
+            if let Some(me) = weak.upgrade() {
+                me.choose("Choose a shift lock cursor", "Pictures", &PICTURES, |me, path| {
+                    match cursor_png(&path, SHIFT_LOCK_SIZE).and_then(|png| mods::put(mods::SHIFT_LOCK, &png)) {
+                        Ok(()) => mods::set_note("shift-lock", Some(&file_name(&path))),
+                        Err(error) => (me.toast)(&format!("Couldn't use that picture: {error}")),
+                    }
+                    me.refresh();
+                });
+            }
+        });
+        let weak = Rc::downgrade(&me);
+        me.shift_lock_reset.connect_clicked(move |_| {
+            if let Some(me) = weak.upgrade() {
+                me.reset(&[mods::SHIFT_LOCK], "shift-lock");
             }
         });
         let weak = Rc::downgrade(&me);
@@ -167,11 +198,17 @@ impl ModsTab {
         if cursor != 0 {
             self.preview.set_from_file(Some(&image));
         }
-        for (row, reset, rel, note) in [(&self.sound, &self.sound_reset, mods::DEATH_SOUND, "death-sound"),
+        for (row, reset, rel, note) in [(&self.shift_lock, &self.shift_lock_reset, mods::SHIFT_LOCK, "shift-lock"),
+                                        (&self.sound, &self.sound_reset, mods::DEATH_SOUND, "death-sound"),
                                         (&self.font, &self.font_reset, mods::FONT, "font")] {
             let set = mods::has(rel);
             row.set_subtitle(&if set { mods::note(note).unwrap_or_else(|| "Custom".into()) } else { "Roblox's own".into() });
             reset.set_visible(set);
+        }
+        let shift_lock = mods::has(mods::SHIFT_LOCK);
+        self.shift_lock_preview.set_visible(shift_lock);
+        if shift_lock {
+            self.shift_lock_preview.set_from_file(Some(&mods::folder().join(mods::SHIFT_LOCK)));
         }
 
         for row in self.rows.borrow_mut().drain(..) {
@@ -223,8 +260,8 @@ impl ModsTab {
                     me.refresh();
                 });
             }
-            _ => self.choose("Choose a cursor", "Pictures", &["png", "jpg", "jpeg", "svg", "webp"], |me, path| {
-                let saved = cursor_png(&path).and_then(|png| {
+            _ => self.choose("Choose a cursor", "Pictures", &PICTURES, |me, path| {
+                let saved = cursor_png(&path, CURSOR_SIZE).and_then(|png| {
                     mods::put(mods::CURSORS[0], &png)?;
                     mods::put(mods::CURSORS[1], &png)
                 });
@@ -290,19 +327,21 @@ mod tests {
         wide.fill(0xffffffff);
         let path = dir.path().join("wide.png");
         wide.savev(&path, "png", &[]).unwrap();
-        let png = cursor_png(&path).unwrap();
-        let out = dir.path().join("out.png");
-        std::fs::write(&out, &png).unwrap();
-        let made = gdk_pixbuf::Pixbuf::from_file(&out).unwrap();
-        assert_eq!((made.width(), made.height()), (CURSOR_SIZE, CURSOR_SIZE));
-        let pixels = made.read_pixel_bytes();
-        let alpha = |x: i32, y: i32| pixels[(y * made.rowstride() + x * 4 + 3) as usize];
-        assert_eq!(alpha(32, 32), 255); // the picture, in the middle
-        assert_eq!(alpha(32, 4), 0); // transparent above and below it
-        // already the right size: kept byte for byte
-        let exact = dir.path().join("exact.png");
-        std::fs::copy(&out, &exact).unwrap();
-        assert_eq!(cursor_png(&exact).unwrap(), std::fs::read(&exact).unwrap());
-        assert!(cursor_png(&dir.path().join("missing.png")).is_err());
+        for size in [CURSOR_SIZE, SHIFT_LOCK_SIZE] {
+            let png = cursor_png(&path, size).unwrap();
+            let out = dir.path().join(format!("out{size}.png"));
+            std::fs::write(&out, &png).unwrap();
+            let made = gdk_pixbuf::Pixbuf::from_file(&out).unwrap();
+            assert_eq!((made.width(), made.height()), (size, size));
+            let pixels = made.read_pixel_bytes();
+            let alpha = |x: i32, y: i32| pixels[(y * made.rowstride() + x * 4 + 3) as usize];
+            assert_eq!(alpha(size / 2, size / 2), 255); // the picture, in the middle
+            assert_eq!(alpha(size / 2, 2), 0); // transparent above and below it
+            // already that size: kept byte for byte; for the other size it's redrawn
+            assert_eq!(cursor_png(&out, size).unwrap(), png);
+            let other = if size == CURSOR_SIZE { SHIFT_LOCK_SIZE } else { CURSOR_SIZE };
+            assert_ne!(cursor_png(&out, other).unwrap(), png);
+        }
+        assert!(cursor_png(&dir.path().join("missing.png"), CURSOR_SIZE).is_err());
     }
 }
