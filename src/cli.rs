@@ -15,7 +15,8 @@ use crate::{builds, desktop, doctor, launch, migrate, mods, processes, settings,
 
 pub const HELP: &str = "mace: macOS Roblox on Linux, with multiple accounts.
 
-    mace                          open the window
+    mace [settings]               open Mace Settings
+    mace play [ACCOUNT]           start Roblox (without ACCOUNT, the one used last)
     mace list [--json]            accounts and what they're doing
     mace start ACCOUNT [LINK]     start an account (LINK may be another account)
     mace stop ACCOUNT
@@ -197,6 +198,38 @@ fn cmd_start(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The Mace app: Roblox on the account named, or the one used last; a running
+/// one is brought forward. With no accounts there's nothing to start, so Mace
+/// Settings opens to add one.
+fn play(args: &[String]) -> i32 {
+    let account = match play_account(args.first().map(String::as_str)) {
+        Ok(None) => return crate::ui::run_window(),
+        Ok(Some(account)) => Ok(account),
+        Err(error) => Err(error),
+    };
+    match account.and_then(|account| Ok((launch::start(&account, None, false, true)?, account))) {
+        Ok((argv, account)) => {
+            println!("{} {}", if argv.is_empty() { "already running:" } else { "starting" }, account.name());
+            0
+        }
+        Err(error) => {
+            // from the app menu: say it where it's seen
+            notify("Couldn't start Roblox", &format!("{error:#}"), &[], false);
+            eprintln!("mace: {error:#}");
+            1
+        }
+    }
+}
+
+/// The account `mace play` starts: the one named, else the one used last
+/// (the first, if none was); None when there are no accounts at all.
+fn play_account(query: Option<&str>) -> anyhow::Result<Option<Account>> {
+    match query {
+        Some(query) => accounts::find(query).map(Some),
+        None => Ok(accounts::last_used()),
+    }
+}
+
 fn cmd_open(args: &[String], _out: &mut dyn Write) -> anyhow::Result<()> {
     let Some(url) = args.first() else { bail!("usage: mace open URL") };
     // The link signs Roblox in as the browser's account: open it where that account
@@ -204,7 +237,7 @@ fn cmd_open(args: &[String], _out: &mut dyn Write) -> anyhow::Result<()> {
     // whose login the link would replace).
     let account = accounts::browser_account()
         .or_else(|| accounts::accounts().into_iter().next())
-        .ok_or_else(|| anyhow!("no accounts yet: add one in Mace"))?;
+        .ok_or_else(|| anyhow!("no accounts yet: add one in Mace Settings"))?;
     if let Err(error) = launch::start(&account, Some(url), false, false) {
         // from a browser click: say it where it's seen
         notify("Couldn't start Roblox", &error.to_string(), &[], false);
@@ -471,6 +504,8 @@ pub fn run(args: &[String]) -> i32 {
             println!("{HELP}");
             return 0;
         }
+        "settings" => return crate::ui::run_window(),
+        "play" => return play(&args[1..]),
         "loading" => {
             let Some(id) = args.get(1) else { return 2 };
             return crate::ui::run_loading(id);
@@ -494,5 +529,26 @@ pub fn run(args: &[String]) -> i32 {
             eprintln!("mace: {error:#}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testenv::TempHome;
+
+    #[test]
+    fn mace_starts_the_account_used_last() {
+        let home = TempHome::new();
+        // no accounts yet: Mace Settings opens instead
+        assert!(play_account(None).unwrap().is_none());
+        accounts::register(Account::new("main", home.make_prefix("m", None), "", false)).unwrap();
+        let alt = accounts::register(Account::new("alt1", home.make_prefix("a", None), "Second", false)).unwrap();
+        // none used yet: the first
+        assert_eq!(play_account(None).unwrap().unwrap().id, "main");
+        accounts::set_last_used(&alt).unwrap();
+        assert_eq!(play_account(None).unwrap().unwrap().id, "alt1");
+        assert_eq!(play_account(Some("main")).unwrap().unwrap().id, "main");
+        assert!(play_account(Some("nobody")).is_err());
     }
 }

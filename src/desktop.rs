@@ -6,7 +6,7 @@ use std::process::Command;
 
 use serde_json::{Map, Value, json};
 
-use crate::{APP_ID, fsutil, paths};
+use crate::{APP_ID, SETTINGS_ID, fsutil, paths};
 
 pub const SCHEMES: [&str; 2] = ["x-scheme-handler/roblox-player", "x-scheme-handler/roblox"];
 // Browsers that open links through the desktop portal (OpenURI) don't ask
@@ -37,7 +37,9 @@ fn exec_quote(path: &Path) -> String {
     }
 }
 
-fn entries(command: &Path) -> [(String, String); 2] {
+/// Mace, which starts Roblox (its windows are Roblox's, so they show under it);
+/// Mace Settings, the window; and the handler for roblox.com's links.
+fn entries(command: &Path) -> [(String, String); 3] {
     let run = exec_quote(command);
     [
         (format!("{APP_ID}.desktop"), format!(
@@ -45,13 +47,25 @@ fn entries(command: &Path) -> [(String, String); 2] {
 Type=Application
 Name=Mace
 GenericName=Roblox launcher
-Comment=Play Roblox on several accounts at once
-Exec={run}
+Comment=Play Roblox
+Exec={run} play
 Icon={APP_ID}
 Terminal=false
 Categories=Game;
-Keywords=Roblox;macOS;Rosemary;accounts;
-StartupWMClass={APP_ID}
+Keywords=Roblox;macOS;Rosemary;play;
+StartupWMClass=com.roblox.RobloxPlayer
+")),
+        (format!("{SETTINGS_ID}.desktop"), format!(
+"[Desktop Entry]
+Type=Application
+Name=Mace Settings
+Comment=Accounts, mods and settings for Mace
+Exec={run} settings
+Icon={APP_ID}
+Terminal=false
+Categories=Game;
+Keywords=Roblox;accounts;mods;settings;
+StartupWMClass={SETTINGS_ID}
 ")),
         (format!("{APP_ID}.open.desktop"), format!(
 "[Desktop Entry]
@@ -146,6 +160,7 @@ pub fn install(command: &Path) -> anyhow::Result<Vec<String>> {
             }
         }
     }
+    state.insert(ENTRIES_KEY.into(), json!(crate::VERSION));
     fsutil::write_json(&state_file(), &Value::Object(state))?;
     if fsutil::which("xdg-mime").is_some() {
         let mut args = vec!["default", handler.as_str()];
@@ -167,6 +182,52 @@ fn update_caches() {
     }
     if fsutil::which("gtk-update-icon-cache").is_some() {
         let _ = Command::new("gtk-update-icon-cache").args(["-q", "-t"]).arg(paths::data_home().join("icons/hicolor")).output();
+    }
+}
+
+/// The version of Mace that last wrote the menu entries, in the state file.
+const ENTRIES_KEY: &str = "entries";
+
+/// The program the installed menu entries start: the first word of Mace's
+/// Exec line, as `exec_quote` wrote it. None when there are no entries.
+fn installed_command() -> Option<PathBuf> {
+    let text = std::fs::read_to_string(applications().join(format!("{APP_ID}.desktop"))).ok()?;
+    let exec = text.lines().find_map(|l| l.strip_prefix("Exec="))?.trim();
+    let program = match exec.strip_prefix('"') {
+        Some(quoted) => {
+            let mut out = String::new();
+            let mut chars = quoted.chars();
+            while let Some(ch) = chars.next() {
+                match ch {
+                    '\\' => out.push(chars.next()?),
+                    '"' => break,
+                    ch => out.push(ch),
+                }
+            }
+            out
+        }
+        None => exec.split_whitespace().next()?.to_string(),
+    };
+    Some(PathBuf::from(program))
+}
+
+/// An update is done by the old version, which leaves the menu entries as it
+/// wrote them: the first time a newer one runs, it writes its own (once per
+/// version, and only where they're installed). Only the program the entries
+/// start does it, not a copy being checked before an update or a test build.
+pub fn refresh_after_update() {
+    let mut state = read_state();
+    if state.get(ENTRIES_KEY).and_then(Value::as_str) == Some(crate::VERSION) {
+        return;
+    }
+    let Some(command) = installed_command() else { return };
+    let same = |a: &Path, b: &Path| matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b);
+    if !same(&command, &crate::launch::mace_exe()) {
+        return;
+    }
+    if refresh(&command).is_ok() {
+        state.insert(ENTRIES_KEY.into(), json!(crate::VERSION));
+        let _ = fsutil::write_json(&state_file(), &Value::Object(state));
     }
 }
 
@@ -232,6 +293,38 @@ mod tests {
     use crate::testenv::TempHome;
 
     #[test]
+    fn a_newer_version_rewrites_the_menu_once() {
+        let home = TempHome::new();
+        let read = |id: &str| std::fs::read_to_string(applications().join(format!("{id}.desktop"))).unwrap();
+        // never integrated: nothing appears
+        refresh_after_update();
+        assert!(!applications().exists());
+        // as 0.1.1 left it: one entry, which opened the window, and no version noted
+        let write_old = |program: &Path| {
+            std::fs::create_dir_all(applications()).unwrap();
+            std::fs::write(applications().join(format!("{APP_ID}.desktop")),
+                           format!("[Desktop Entry]\nName=Mace\nExec={}\n", exec_quote(program))).unwrap();
+        };
+        // the menu starts another copy (a test build, or one being checked before an update): left alone
+        write_old(Path::new("/opt/other/mace"));
+        refresh_after_update();
+        assert!(!read(APP_ID).contains(" play") && !applications().join(format!("{SETTINGS_ID}.desktop")).exists());
+        // it starts this program (here through a path that needs quoting): rewritten
+        let program = home.path().join("my mace/mace");
+        std::fs::create_dir_all(program.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(std::env::current_exe().unwrap(), &program).unwrap();
+        write_old(&program);
+        refresh_after_update();
+        let play = read(APP_ID);
+        assert!(play.contains(&format!("Exec={} play\n", exec_quote(&program))), "{play}");
+        assert!(applications().join(format!("{SETTINGS_ID}.desktop")).is_file());
+        // once per version: later edits stay
+        std::fs::write(applications().join(format!("{SETTINGS_ID}.desktop")), "mine").unwrap();
+        refresh_after_update();
+        assert_eq!(std::fs::read_to_string(applications().join(format!("{SETTINGS_ID}.desktop"))).unwrap(), "mine");
+    }
+
+    #[test]
     fn an_update_refreshes_only_what_is_installed() {
         let _home = TempHome::new();
         // never integrated (install.sh --no-links): nothing appears
@@ -241,9 +334,13 @@ mod tests {
         std::fs::create_dir_all(applications()).unwrap();
         std::fs::write(applications().join(format!("{APP_ID}.desktop")), "old").unwrap();
         refresh(Path::new("/opt/mace")).unwrap();
-        let entry = std::fs::read_to_string(applications().join(format!("{APP_ID}.desktop"))).unwrap();
-        assert!(entry.contains("Exec=/opt/mace\n"), "{entry}");
-        assert!(applications().join(format!("{APP_ID}.open.desktop")).is_file());
+        let read = |id: &str| std::fs::read_to_string(applications().join(format!("{id}.desktop"))).unwrap();
+        // Mace starts Roblox; an older install's window gets its own entry, Mace Settings
+        let play = read(APP_ID);
+        assert!(play.contains("Name=Mace\n") && play.contains("Exec=/opt/mace play\n"), "{play}");
+        let window = read(SETTINGS_ID);
+        assert!(window.contains("Name=Mace Settings\n") && window.contains("Exec=/opt/mace settings\n"), "{window}");
+        assert!(read(&format!("{APP_ID}.open")).contains("Exec=/opt/mace open %u\n"));
         assert!(icon_target().is_file());
         assert!(!state_file().exists());
     }

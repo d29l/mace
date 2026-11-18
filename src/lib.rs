@@ -25,4 +25,7 @@ pub mod upgrade;
 pub mod testenv;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The Mace app, which starts Roblox (`mace play`).
 pub const APP_ID: &str = "io.github.Mace";
+/// Mace Settings: the window with the accounts and settings.
+pub const SETTINGS_ID: &str = "io.github.Mace.Settings";

@@ -54,9 +54,10 @@ curl -L https://github.com/d29l/mace/releases/latest/download/mace-x86_64-linux.
 cd mace-*/ && ./install.sh
 ```
 
-This adds Mace to your app menu and makes the Play button on roblox.com open
-it. If you used Nutmeg before, your settings and login are picked up
-automatically.
+This adds two apps to your menu: Mace, which starts Roblox, and Mace Settings,
+for your accounts, mods and settings. It also makes the Play button on
+roblox.com open Mace. If you used Nutmeg before, your settings and login are
+picked up automatically.
 
 To build it yourself instead:
 
@@ -65,15 +66,17 @@ git clone https://github.com/d29l/mace && cd mace
 ./install.sh
 ```
 
-In a game, press Insert for the in-game bar (the key can be changed in Mace's
-settings, and `mace panel` opens it too).
+In a game, press Insert for the in-game bar (the key can be changed in Mace
+Settings, and `mace panel` opens it too).
 
 ## Usage
 
-Open Mace, add your accounts and sign in to each one. After that, use the
-Play button on roblox.com, the Mace window, or the command line:
+Open Mace Settings, add your accounts and sign in to each one. After that,
+start Roblox with Mace (it opens the account you used last), the Play button
+on roblox.com, Mace Settings, or the command line:
 
 ```sh
+mace play [ACCOUNT]       # start Roblox
 mace list                 # your accounts and what they're doing
 mace start ACCOUNT        # start an account
 mace gather ACCOUNT       # bring every other account to ACCOUNT's server
@@ -85,7 +88,7 @@ Run `mace --help` for everything else.
 
 ## Update
 
-Mace checks for a new version once a day. When there is one, the Mace window
+Mace checks for a new version once a day. When there is one, Mace Settings
 shows an Update button and your game shows a toast; `mace upgrade` installs it
 from a terminal. Games that are running keep the old version until they're
 restarted.

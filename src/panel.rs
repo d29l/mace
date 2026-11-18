@@ -496,7 +496,7 @@ fn tell_about_update(shared: &Shared) {
         return;
     }
     let Some(version) = upgrade::available() else { return };
-    let toast = ToPanel::Toast { title: format!("Mace {version} is out"), body: "Open Mace to update".into() };
+    let toast = ToPanel::Toast { title: format!("Mace {version} is out"), body: "Open Mace Settings to update".into() };
     if shared.to_panels(&toast) {
         upgrade::announced();
     }

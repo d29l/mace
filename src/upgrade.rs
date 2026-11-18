@@ -13,7 +13,7 @@ use anyhow::{Context, bail};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::{VERSION, builds, desktop, fsutil, launch, panel, paths, settings};
+use crate::{VERSION, builds, fsutil, launch, panel, paths, settings};
 
 /// The newest release, as GitHub's API describes it.
 const LATEST: &str = "https://api.github.com/repos/d29l/mace/releases/latest";
@@ -156,8 +156,8 @@ pub fn update_now() -> anyhow::Result<Option<String>> {
 pub fn install(release: &Release) -> anyhow::Result<()> {
     let bin = installed_copy().context("only the copy install.sh puts in ~/.local/bin updates itself")?;
     install_to(release, &bin, &paths::data().join("app"))?;
-    // the menu entries and icon as they are now (Roblox links stay as they are)
-    let _ = desktop::refresh(&bin);
+    // the new version's first run writes its menu entries (desktop::refresh_after_update)
+    let _ = Command::new(&bin).arg("--version").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
     Ok(())
 }
 

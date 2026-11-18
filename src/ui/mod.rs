@@ -12,7 +12,7 @@ mod window;
 use adw::prelude::*;
 use gtk::{gdk, glib};
 
-use crate::APP_ID;
+use crate::{APP_ID, SETTINGS_ID};
 
 /// Mace looks the same everywhere: dark, plain greys. Set above the user's own
 /// GTK colours (a desktop theme's gtk.css), which would otherwise recolour it.
@@ -58,9 +58,9 @@ fn use_mace_look(extra: &str) {
     }
 }
 
-/// The main window.
+/// Mace Settings: the accounts and settings window.
 pub fn run_window() -> i32 {
-    let app = adw::Application::builder().application_id(APP_ID).build();
+    let app = adw::Application::builder().application_id(SETTINGS_ID).build();
     app.connect_startup(|_| use_mace_look(""));
     app.connect_activate(|app| {
         match app.active_window() {

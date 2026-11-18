@@ -44,7 +44,7 @@ pub struct Window {
 
 impl Window {
     pub fn new(app: &adw::Application) -> adw::ApplicationWindow {
-        let window = adw::ApplicationWindow::builder().application(app).title("Mace").default_width(620).default_height(640).build();
+        let window = adw::ApplicationWindow::builder().application(app).title("Mace Settings").default_width(620).default_height(640).build();
         // tabs: the accounts, then the settings every account shares
         let tabs = adw::ViewStack::new();
         let switcher = adw::ViewSwitcher::builder().stack(&tabs).policy(adw::ViewSwitcherPolicy::Wide).build();
