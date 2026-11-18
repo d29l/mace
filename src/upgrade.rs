@@ -19,6 +19,7 @@ use crate::{VERSION, builds, fsutil, launch, panel, paths, settings};
 const LATEST: &str = "https://api.github.com/repos/d29l/mace/releases/latest";
 /// A release's download: a `mace-VERSION` folder with the program, the
 /// panel's library, Mace's files and install.sh (made by dev/package.sh).
+/// Every copy out there looks for this name and layout: never change them.
 pub const TARBALL: &str = "mace-x86_64-linux.tar.gz";
 /// What GitHub said is reused for this long (seconds), so games starting
 /// together ask it once.

@@ -4,6 +4,11 @@
 # files and install.sh, and OUT/mace-x86_64-linux.tar.gz.sha256. The release
 # workflow (.github/workflows/release.yml) runs it for every v* tag.
 #
+# Every Mace already installed updates itself from what this makes, so keep
+# it as it is: the two file names, one folder holding `mace`,
+# `libmace_panel.so` and `data/`, and `mace --version` printing
+# "mace VERSION". An older copy can't install a release that differs.
+#
 #   dev/package.sh [OUT]     (default: dist)
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
