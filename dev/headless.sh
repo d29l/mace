@@ -1,5 +1,6 @@
 #!/bin/sh
-# Run a Mace UI (the window or the overlay) in a headless sway and take
+# Run a Mace UI (the window, the loading window, or a game with the in-game
+# panel: dev/standin) in a headless sway and take
 # screenshots, away from the real session: its own runtime dir and Wayland
 # socket, and no route to the audio system.
 #
@@ -51,6 +52,8 @@ done
 # nothing started here can make a sound or reach the real session
 export PULSE_SERVER="unix:/nonexistent/mace-headless" PIPEWIRE_REMOTE="mace-headless-none" \
     PIPEWIRE_RUNTIME_DIR="$tmp/none"
+# nor reach the real desktop: no session bus (notifications could play a sound)
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/nonexistent/mace-headless"
 printf 'pcm.!default { type null }\nctl.!default { type hw card 0 }\n' > "$tmp/asound.conf"
 export ALSA_CONFIG_PATH="$tmp/asound.conf"
 export XDG_RUNTIME_DIR="$tmp/run" WAYLAND_DISPLAY="$sock" GDK_BACKEND=wayland QT_QPA_PLATFORM=wayland

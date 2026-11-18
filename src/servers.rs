@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 use crate::accounts::Account;
 use crate::links::share_link;
 use crate::{builds, fsutil, paths};
+use mace_proto::{PublicServer, ServerPage, Sort};
 
 static JOINING: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"! Joining game '([0-9a-f-]+)' place (\d+) at ").unwrap());
@@ -146,6 +147,82 @@ pub fn fetch_json(url: &str) -> Option<Value> {
     Some(data)
 }
 
+/// Pages of public servers are reused this long.
+const PAGE_FRESH: Duration = Duration::from_secs(30);
+/// After Roblox says "too many requests", nothing is asked for this long.
+const SLOW_DOWN: Duration = Duration::from_secs(10);
+static PAGES: LazyLock<Mutex<HashMap<String, (Instant, ServerPage)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static PAUSED_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// A page of a game's public servers that have room, from Roblox (no login
+/// needed): fullest first or emptiest first, 100 at a time.
+pub fn public_page(place: &str, sort: Sort, cursor: Option<&str>) -> ServerPage {
+    let mut page = ServerPage { place: place.into(), sort, cursor: cursor.map(String::from), ..Default::default() };
+    if place.is_empty() || !place.bytes().all(|b| b.is_ascii_digit()) {
+        page.error = "No game to list servers for".into();
+        return page;
+    }
+    if std::env::var_os("MACE_OFFLINE").is_some() {
+        page.error = "Offline".into();
+        return page;
+    }
+    let key = format!("{place} {sort:?} {}", cursor.unwrap_or(""));
+    if let Some((at, cached)) = PAGES.lock().unwrap().get(&key)
+        && at.elapsed() < PAGE_FRESH
+    {
+        return cached.clone();
+    }
+    let pause = "Roblox asked for a break; try again in a few seconds";
+    if PAUSED_UNTIL.lock().unwrap().is_some_and(|until| Instant::now() < until) {
+        page.error = pause.into();
+        return page;
+    }
+    let order = match sort { Sort::Most => "Desc", Sort::Fewest => "Asc" };
+    let mut url = format!(
+        "https://games.roblox.com/v1/games/{place}/servers/Public?sortOrder={order}&excludeFullGames=true&limit=100");
+    if let Some(cursor) = cursor {
+        url.push_str("&cursor=");
+        url.push_str(&crate::links::encode(cursor));
+    }
+    match builds::agent(Duration::from_secs(8)).get(&url).call() {
+        Ok(mut response) => match response.body_mut().read_json::<Value>() {
+            Ok(data) => {
+                fill_page(&data, &mut page);
+                PAGES.lock().unwrap().insert(key, (Instant::now(), page.clone()));
+            }
+            Err(_) => page.error = "Roblox's answer didn't make sense".into(),
+        },
+        Err(ureq::Error::StatusCode(429)) => {
+            *PAUSED_UNTIL.lock().unwrap() = Some(Instant::now() + SLOW_DOWN);
+            page.error = pause.into();
+        }
+        Err(ureq::Error::StatusCode(code)) => page.error = format!("Roblox answered {code}"),
+        Err(_) => page.error = "Couldn't reach Roblox".into(),
+    }
+    page
+}
+
+/// Roblox's answer as a page; servers one of your accounts has been in get their place.
+fn fill_page(data: &Value, page: &mut ServerPage) {
+    let known = match fsutil::read_json(&described_file()) {
+        Some(Value::Object(map)) => map,
+        _ => Map::new(),
+    };
+    page.next = data.get("nextPageCursor").and_then(Value::as_str).filter(|c| !c.is_empty()).map(String::from);
+    for s in data.get("data").and_then(Value::as_array).into_iter().flatten() {
+        let Some(id) = s.get("id").and_then(Value::as_str) else { continue };
+        let number = |k: &str| s.get(k).and_then(Value::as_f64);
+        page.list.push(PublicServer {
+            id: id.to_string(),
+            playing: number("playing").unwrap_or(0.0) as u32,
+            max: number("maxPlayers").unwrap_or(0.0) as u32,
+            fps: number("fps").map(|f| f as f32),
+            ping: number("ping").map(|p| p as u32),
+            location: known.get(id).and_then(|i| i.get("location")).and_then(Value::as_str).map(String::from),
+        });
+    }
+}
+
 pub fn game_name(universe: Option<&str>) -> Option<String> {
     let data = fetch_json(&format!("https://games.roblox.com/v1/games?universeIds={}", universe?))?;
     Some(data.get("data")?.get(0)?.get("name")?.as_str()?.to_string())
@@ -264,7 +341,7 @@ pub fn read_tail(path: &Path, limit: u64) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::testenv::TempHome;
     use std::io::Write;
@@ -308,5 +385,24 @@ mod tests {
         follower.poll();
         assert!(follower.server.is_empty());
         assert_eq!(follower.history.len(), 1);
+    }
+
+    #[test]
+    fn a_page_of_public_servers() {
+        let _home = crate::testenv::TempHome::new();
+        let job = "9d997143-521a-440f-9fca-b6684348f0f8";
+        fsutil::write_atomic(&described_file(), json!({job: {"name": "Obby", "location": "Paris, FR"}}).to_string().as_bytes()).unwrap();
+        let data = json!({"previousPageCursor": null, "nextPageCursor": "abc==", "data": [
+            {"id": job, "maxPlayers": 35, "playing": 34, "playerTokens": [], "players": [], "fps": 60.01, "ping": 315},
+            {"id": "beb8f15d-baa9-4c52-9839-d470d0eefe58", "maxPlayers": 35, "playing": 3, "fps": 59.5},
+        ]});
+        let mut page = ServerPage::default();
+        fill_page(&data, &mut page);
+        assert_eq!(page.next.as_deref(), Some("abc=="));
+        assert_eq!(page.list.len(), 2);
+        assert_eq!((page.list[0].playing, page.list[0].max, page.list[0].ping), (34, 35, Some(315)));
+        assert_eq!(page.list[0].location.as_deref(), Some("Paris, FR"));
+        assert_eq!((page.list[1].ping, page.list[1].location.as_deref()), (None, None));
+        assert!(public_page("1; rm", Sort::Most, None).error.contains("No game"));
     }
 }

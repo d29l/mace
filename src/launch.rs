@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock};
 
 use anyhow::bail;
 use regex::Regex;
@@ -12,14 +13,14 @@ use regex::Regex;
 use crate::accounts::{self, Account};
 use crate::builds::{self, Build};
 use crate::settings::{self, Settings};
-use crate::{fsutil, links, paths, processes, runner, servers};
+use crate::{fsutil, links, panel, paths, processes, runner, servers, supervisor};
 
 /// Variables Mace sets from its settings. Inherited values are dropped first,
 /// so an account never picks up another launcher's (or another account's) choice.
-const MANAGED_ENV: [&str; 10] = [
+const MANAGED_ENV: [&str; 11] = [
     "ROSEMARY_PREFIX", "ROSEMARY_PREFIX_HOME", "ROSEMARY_PREFIX_SETUP", "ROSEMARY_METAL_PRESENTATION_MODE",
     "ROSEMARY_SCREEN_REFRESH_RATE", "ROSEMARY_DECORATIONS", "ROSEMARY_MENU", "ROSEMARY_CONTROL_EDIT_KEYS",
-    "ROSEMARY_CONFINE_POINTER", "MANGOHUD",
+    "ROSEMARY_CONFINE_POINTER", "MANGOHUD", "MACE_PANEL",
 ];
 
 pub const SETTINGS_FILE: &str = "Library/Roblox/GlobalBasicSettings_13.xml";
@@ -138,7 +139,13 @@ pub fn command(account: &Account, bundle: &Path, url: Option<&str>, config: &Set
         env.insert(name.clone(), value.as_str().map_or_else(|| value.to_string(), String::from));
     }
 
-    let mut core = vec![runner::find(&s.rosemary)?.to_string_lossy().into_owned(), "run".into(),
+    let rosemary = runner::find(&s.rosemary)?;
+    if config.panel
+        && let Err(why) = panel::add_env(&mut env, account, &rosemary)
+    {
+        supervisor::note_for(&account.id, &format!("no in-game panel: {why}"));
+    }
+    let mut core = vec![rosemary.to_string_lossy().into_owned(), "run".into(),
                         bundle.to_string_lossy().into_owned()];
     if let Some(url) = url {
         core.extend(["-protocolString".into(), url.to_string()]);
@@ -239,32 +246,62 @@ pub fn mace_exe() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mace"))
 }
 
-/// Start an account, joining `link` if given. A new start runs under a
-/// supervisor (`mace supervise`), which returns at once. A running account is
-/// handed the link instead, as a Mac hands a URL to a running app, or, with no
-/// link, has its window raised. Returns the command line used.
 /// Give a running client a link, so it moves to that server without closing.
 ///
 /// A second `rosemary run` of a running bundle is handed to one of the
 /// bundle's processes, and Roblox's crash handler lives in the bundle too: when
 /// it gets the link, it drops it. It only sends crash reports (which Rosemary
 /// can't anyway), so it is stopped first and the game is the one left.
-fn hand_over(account: &Account, argv: &[String], env: &Env) -> anyhow::Result<()> {
+///
+/// That `rosemary run` finds the running client through the prefix's process
+/// server. A client started while that server was shutting down isn't known to
+/// it, and the `rosemary run` then starts a second client, which would sign in
+/// and get the first one kicked: it is stopped at once, and the answer is
+/// `Blind` (as it is straight away for a client known to have started so).
+fn hand_over(account: &Account, argv: &[String], env: &Env) -> anyhow::Result<Handed> {
+    // a client that started without Rosemary's process server can't be found: don't even try
+    if crate::supervisor::blind_marker(&account.id).exists() {
+        return Ok(Handed::Blind);
+    }
     // an update waiting to be installed makes the client quit on a new link
     processes::stop_updaters(account);
     builds::clear_updater_leftovers(account);
     processes::stop_crash_handlers(account);
     let player_log = servers::newest_player_log(&account.logs());
     let seen = player_log.as_ref().and_then(|p| p.metadata().ok()).map_or(0, |m| m.len());
+    std::fs::create_dir_all(paths::logs())?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(paths::logs().join(format!("{}.log", account.id)))?;
     let mut child = Command::new(&argv[0])
         .args(&argv[1..])
         .env_clear()
         .envs(env)
         .stdin(Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // its own group: if it turns out to be a second client, all of it goes at once
+        .process_group(0)
         .spawn()?;
+    let group = child.id() as i32;
+    let kill_group = || {
+        // SAFETY: the group of the process we just started.
+        unsafe { libc::killpg(group, libc::SIGKILL) };
+    };
+    // what Rosemary says goes to the account's log, and is listened to
+    let second = Arc::new(AtomicBool::new(false));
+    let streams: [Option<Box<dyn std::io::Read + Send>>; 2] =
+        [child.stdout.take().map(|s| Box::new(s) as _), child.stderr.take().map(|s| Box::new(s) as _)];
+    for stream in streams.into_iter().flatten() {
+        let (second, mut log) = (second.clone(), log.try_clone()?);
+        std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            for line in std::io::BufReader::new(stream).lines().map_while(Result::ok) {
+                let _ = writeln!(log, "{line}");
+                if SECOND_CLIENT.iter().any(|s| line.contains(s)) {
+                    second.store(true, Ordering::Relaxed);
+                }
+            }
+        });
+    }
     let clock = std::time::Instant::now();
     let took = |path: &Path| {
         use std::io::{Read, Seek, SeekFrom};
@@ -276,26 +313,50 @@ fn hand_over(account: &Account, argv: &[String], env: &Env) -> anyhow::Result<()
         text.contains(OPENED_URL)
     };
     while clock.elapsed() < HAND_OVER_TIMEOUT {
+        // Rosemary is starting another client (it couldn't find the running one): stop it before it
+        // signs in, which would get the running one kicked
+        if second.load(Ordering::Relaxed) || servers::newest_player_log(&account.logs()) != player_log {
+            kill_group();
+            let _ = child.wait();
+            return Ok(Handed::Blind);
+        }
         if player_log.as_deref().is_some_and(took) {
             let _ = child.wait();
-            return Ok(());
+            return Ok(Handed::Taken);
         }
         if let Some(status) = child.try_wait()?
             && !status.success()
         {
             bail!("Rosemary couldn't give {} the link", account.name());
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    let _ = child.kill();
+    kill_group();
     let _ = child.wait();
     bail!("{}'s Roblox didn't take the link", account.name())
 }
 
+/// How a hand-over went.
+#[derive(Debug, PartialEq)]
+enum Handed {
+    /// The running client took the link.
+    Taken,
+    /// Rosemary couldn't find the running client (and a second one, if it began, was stopped).
+    Blind,
+}
+
 /// What the client logs when it is given a link.
 const OPENED_URL: &str = "(AppDelegate) application:openURLs";
+/// What a `rosemary run` says when it's about to start a client of its own
+/// instead of handing the link over.
+const SECOND_CLIENT: [&str; 2] = ["process server is unavailable", "imports unbound"];
 const HAND_OVER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(if cfg!(test) { 1 } else { 8 });
 
+/// Start an account, joining `link` if given. A new start runs under a
+/// supervisor (`mace supervise`), which returns at once. A running account is
+/// handed the link instead, as a Mac hands a URL to a running app (started
+/// again with it if it can't be handed links), or, with no link, has its
+/// window raised. Returns the command line used.
 pub fn start(account: &Account, link: Option<&str>, dry_run: bool, remember: bool) -> anyhow::Result<Vec<String>> {
     let config = settings::load();
     let url = resolve_link(link, account)?;
@@ -310,11 +371,16 @@ pub fn start(account: &Account, link: Option<&str>, dry_run: bool, remember: boo
     std::fs::create_dir_all(paths::logs())?;
     if !live.is_empty() {
         let (argv, env) = command(account, &account.bundle(), url.as_deref(), &config)?;
-        hand_over(account, &argv, &env)?;
-        if remember {
-            accounts::set_last_used(account)?;
+        if hand_over(account, &argv, &env)? == Handed::Taken {
+            if remember {
+                accounts::set_last_used(account)?;
+            }
+            return Ok(argv);
         }
-        return Ok(argv);
+        // it can't be handed links: start it again, into that server, rather than have two sign in
+        supervisor::note_for(&account.id, "Rosemary couldn't reach the running Roblox to hand it the link; \
+                                           restarting it into that server instead");
+        processes::stop(account, &accounts::accounts(), std::time::Duration::from_secs(2));
     }
     let mut argv = vec![mace_exe().to_string_lossy().into_owned(), "supervise".into(), account.id.clone()];
     if let Some(url) = &url {
@@ -466,5 +532,59 @@ mod tests {
 
     fn read_status_missing(account: &Account) -> bool {
         crate::supervisor::read_status(&account.id).is_empty()
+    }
+
+    fn hand_over_args(account: &Account) -> (Vec<String>, Env) {
+        command(account, &account.bundle(), Some("roblox://experiences/start?placeId=1818"), &settings::load()).unwrap()
+    }
+
+    #[test]
+    fn a_hand_over_that_would_start_a_second_client_is_stopped() {
+        let home = TempHome::new();
+        // Rosemary can't find the running client: it says so, and goes on to start one of its own
+        let (account, mut client, _handler, _) = live_account(&home,
+            "#!/bin/bash\necho 'rosemary: the process server is unavailable (the prefix is shutting down); \
+             this process cannot see any other' >&2\nsleep 30\n");
+        let (argv, env) = hand_over_args(&account);
+        let clock = std::time::Instant::now();
+        assert_eq!(hand_over(&account, &argv, &env).unwrap(), Handed::Blind);
+        // killed, not waited for (that would take 30 s); the 2 s here are the fake crash handler, a
+        // child of this test, lingering as a zombie while it is stopped
+        assert!(clock.elapsed() < std::time::Duration::from_secs(5), "{:?}", clock.elapsed());
+        assert!(client.try_wait().unwrap().is_none(), "the running game itself is left alone");
+        let _ = client.kill();
+        let _ = client.wait();
+    }
+
+    #[test]
+    fn a_client_that_started_blind_isnt_handed_links() {
+        let home = TempHome::new();
+        let (account, mut client, _handler, player_log) = live_account(&home,
+            "#!/bin/bash\necho \"x (AppDelegate) application:openURLs:$4\" >> \"$FAKE_PLAYER_LOG\"\n");
+        std::fs::create_dir_all(paths::runtime()).unwrap();
+        std::fs::write(crate::supervisor::blind_marker("main"), b"").unwrap();
+        let (argv, env) = hand_over_args(&account);
+        assert_eq!(hand_over(&account, &argv, &env).unwrap(), Handed::Blind);
+        assert!(!std::fs::read_to_string(&player_log).unwrap().contains("openURLs"), "nothing was run");
+        let _ = client.kill();
+        let _ = client.wait();
+    }
+
+    #[test]
+    fn leftovers_go_before_a_client_starts_but_not_while_one_runs() {
+        let home = TempHome::new();
+        let (account, mut client, mut handler, _) = live_account(&home, "#!/bin/bash\nexit 0\n");
+        let everyone = accounts::accounts();
+        assert_eq!(processes::clear_leftovers(&account, &everyone), 0, "a client runs: its helpers are its own");
+        assert!(handler.try_wait().unwrap().is_none());
+        let _ = client.kill();
+        let _ = client.wait();
+        // the client is gone; its crash handler lingers on, as Roblox's helpers do
+        assert!(processes::clear_leftovers(&account, &everyone) >= 1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while handler.try_wait().unwrap().is_none() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(handler.try_wait().unwrap().is_some());
     }
 }

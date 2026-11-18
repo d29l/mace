@@ -1,0 +1,11 @@
+[package]
+name = "mace-proto"
+version = "0.1.0"
+edition = "2024"
+description = "The in-game panel's messages, shared by Mace and the panel"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -1,0 +1,22 @@
+[package]
+name = "mace-panel"
+version = "0.1.0"
+edition = "2024"
+description = "Mace's in-game panel: a Vulkan layer that draws it inside Roblox"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "mace_panel"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ash = { version = "0.38", default-features = false, features = ["std", "debug"] }
+egui = { version = "0.37", default-features = false }
+libc = "0.2"
+mace-proto = { path = "../proto" }
+serde_json = "1"
+png = "0.18"
+
+[build-dependencies]
+naga = { version = "30", features = ["wgsl-in", "spv-out"] }

@@ -79,9 +79,13 @@ pub struct Settings {
     pub extra_env: Map<String, Value>,
     /// A window with progress while an account starts.
     pub loading_screen: bool,
+    /// The in-game panel, drawn inside Roblox.
+    pub panel: bool,
+    /// Blur the game behind the open panel; otherwise it's only dimmed.
+    pub panel_blur: bool,
     /// Rosemary reports frames per second, shown in the panel.
     pub panel_fps: bool,
-    /// Hyprland: bound only while Roblox started by Mace has a window.
+    /// The in-game panel's key, e.g. "INSERT" or "SHIFT + F1" (the game has to receive it).
     pub overlay_key: String,
     /// Account id -> its own values.
     pub accounts: Map<String, Value>,
@@ -105,8 +109,10 @@ impl Default for Settings {
             fast_flags: Map::new(),
             extra_env: Map::new(),
             loading_screen: true,
+            panel: true,
+            panel_blur: false,
             panel_fps: true,
-            overlay_key: "SUPER + TAB".into(),
+            overlay_key: "INSERT".into(),
             accounts: Map::new(),
         }
     }
@@ -261,6 +267,8 @@ impl Settings {
             fast_flags: clean_flags(get("fast_flags")),
             extra_env: clean_env(get("extra_env")),
             loading_screen: truthy(get("loading_screen"), d.loading_screen),
+            panel: truthy(get("panel"), d.panel),
+            panel_blur: truthy(get("panel_blur"), d.panel_blur),
             panel_fps: truthy(get("panel_fps"), d.panel_fps),
             overlay_key: text(get("overlay_key")).trim().to_string(),
             accounts,

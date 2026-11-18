@@ -1,0 +1,11 @@
+[package]
+name = "mace-standin"
+version = "0.1.0"
+edition = "2024"
+description = "A stand-in for Rosemary in the in-game panel's tests (never installed)"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+ash = { version = "0.38", default-features = false, features = ["std", "debug"] }
+libc = "0.2"

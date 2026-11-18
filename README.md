@@ -23,8 +23,10 @@ prefix, so you can play on several of them at the same time.
 - Several accounts running side by side, each with its own login
 - Each account gets the Roblox version it needs, so the updater doesn't get in the way
 - Join another account's server, or bring every account to yours
-- An in-game panel for your server, FPS and alts
-- A loading window, and join notifications that show where the server is
+- An in-game bar, drawn inside the game, for your server, the server list,
+  FPS and alts, on any desktop
+- A loading window, and toasts in the game when you join, saying where the
+  server is
 - FastFlags, GameMode, MangoHud and per-account settings
 
 ## Requirements
@@ -33,7 +35,6 @@ prefix, so you can play on several of them at the same time.
 - [Rosemary](https://github.com/microlift/rosemary), installed through
   [Butter](https://github.com/microlift/butter)
 - GTK 4 and libadwaita 1.5+, and Rust to build Mace
-- Optional: [Quickshell](https://quickshell.org) for the in-game panel
 
 On Arch:
 
@@ -45,16 +46,15 @@ sudo pacman -S rust gtk4 libadwaita
 
 ```sh
 git clone https://github.com/d29l/mace && cd mace
-./install.sh --toasts --overlay
+./install.sh
 ```
 
 This builds Mace, adds it to your app menu and makes the Play button on
 roblox.com open it. If you used Nutmeg before, your settings and login are
 picked up automatically.
 
-Leave out `--toasts` or `--overlay` if you don't want join notifications or the
-in-game panel. On Hyprland the panel opens with Super+Tab; elsewhere, bind a key
-to `qs -p ~/.local/share/mace/app/overlay ipc call overlay toggle`.
+In a game, press Insert for the in-game bar (the key can be changed in Mace's
+settings, and `mace panel` opens it too).
 
 ## Usage
 
@@ -65,6 +65,7 @@ Play button on roblox.com, the Mace window, or the command line:
 mace list                 # your accounts and what they're doing
 mace start ACCOUNT        # start an account
 mace gather ACCOUNT       # bring every other account to ACCOUNT's server
+mace servers ACCOUNT      # the public servers of ACCOUNT's game
 mace why ACCOUNT          # explain why a start failed
 ```
 

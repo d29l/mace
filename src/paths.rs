@@ -97,14 +97,14 @@ pub fn downloads() -> PathBuf {
     cache().join("downloads")
 }
 
-/// Mace's own files (the overlay, the icon, the service units): installed beside
+/// Mace's own files (the icon, the panel's library): installed beside
 /// its data, or the source tree for a development build.
 pub fn app() -> PathBuf {
     if let Some(dir) = env::var_os("MACE_APP_DIR") {
         return PathBuf::from(dir);
     }
     let installed = data().join("app");
-    if installed.join("overlay").is_dir() {
+    if installed.join("data").is_dir() {
         return installed;
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

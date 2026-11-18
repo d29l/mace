@@ -172,22 +172,33 @@ impl GlobalSettings {
 
         let group = adw::PreferencesGroup::builder()
             .title("In-game panel and loading window")
-            .description("On Hyprland the panel's key only exists while a Roblox started by Mace has a window. \
-                          Empty: no key.")
+            .description("The panel is drawn inside Roblox and opens with its key while the game has focus \
+                          (a key your desktop doesn't take for itself). `mace panel` opens it too, for a \
+                          desktop shortcut. Changes apply to games started afterwards.")
             .build();
         page.add(&group);
-        let key = adw::EntryRow::builder().title("Panel key (e.g. SUPER + TAB)").text(&s.overlay_key).build();
+        let panel = adw::SwitchRow::builder().title("In-game panel")
+            .subtitle("Your server, the server list and your alts, over the game").active(s.panel).build();
+        let key = adw::EntryRow::builder().title("Panel key (e.g. INSERT, SHIFT + F1)").text(&s.overlay_key).build();
+        let blur = adw::SwitchRow::builder().title("Blur the game behind the panel")
+            .subtitle("Off: the game is only dimmed").active(s.panel_blur).build();
         let fps = adw::SwitchRow::builder().title("Show FPS")
             .subtitle("Rosemary counts the frames; it costs a little speed").active(s.panel_fps).build();
         let loading = adw::SwitchRow::builder().title("Loading window")
             .subtitle("Shows progress while an account starts").active(s.loading_screen).build();
+        group.add(&panel);
         group.add(&key);
+        group.add(&blur);
         group.add(&fps);
         group.add(&loading);
+        panel.connect_active_notify({ let c = changed.clone(); move |_| c() });
         key.connect_changed({ let c = changed.clone(); move |_| c() });
+        blur.connect_active_notify({ let c = changed.clone(); move |_| c() });
         fps.connect_active_notify({ let c = changed.clone(); move |_| c() });
         loading.connect_active_notify({ let c = changed.clone(); move |_| c() });
+        self.saver(move |t| t.panel = panel.is_active());
         self.saver(move |t| t.overlay_key = key.text().trim().to_string());
+        self.saver(move |t| t.panel_blur = blur.is_active());
         self.saver(move |t| t.panel_fps = fps.is_active());
         self.saver(move |t| t.loading_screen = loading.is_active());
     }

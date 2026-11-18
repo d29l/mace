@@ -18,8 +18,15 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 libc = "0.2"
 tempfile = "3"
 anyhow = "1"
+mace-proto = { path = "proto" }
+png = "0.18"
 
 [profile.release]
 lto = "thin"
 codegen-units = 4
 strip = true
+
+[workspace]
+members = [".", "proto", "layer", "dev/standin"]
+# what install.sh builds; the stand-in is only for tests
+default-members = [".", "layer"]

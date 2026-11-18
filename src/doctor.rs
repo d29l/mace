@@ -118,7 +118,18 @@ pub fn diagnose(account: &Account, live: bool) -> Vec<String> {
             found.push(format!("This account's copy of Roblox is now {have}."));
         }
     }
+    found.extend(panel(&tail));
     found
+}
+
+/// Why the in-game panel isn't there, if Mace's log of the launch says.
+fn panel(launch_log: &str) -> Option<String> {
+    let last = |prefix: &str| launch_log.lines().rev().find_map(|l| l.strip_prefix(prefix).map(str::to_string));
+    if let Some(why) = last("mace: no in-game panel: ") {
+        return Some(format!("There was no in-game panel: {why}."));
+    }
+    last("mace-panel: the panel is off for this session: ")
+        .map(|why| format!("The in-game panel turned itself off ({why}); the game carried on without it."))
 }
 
 #[cfg(test)]
@@ -178,5 +189,14 @@ mod tests {
         std::fs::write(account.logs().join("0.747.0.7471481_20261115T200000Z_Player_abcde_last.log"),
                        format!("{} [FLog::Output] ! Joining game '11111111-2222-4333-8444-555555555555' place 1818 at 10.0.0.1\n", stamp(1.0))).unwrap();
         assert!(diagnose(&account, false)[0].contains("joined place 1818"));
+    }
+
+    #[test]
+    fn the_panel_says_why_it_isnt_there() {
+        assert_eq!(panel("mace: started\nmace: no in-game panel: the panel's library isn't installed\n").as_deref(),
+                   Some("There was no in-game panel: the panel's library isn't installed."));
+        assert!(panel("mace-panel: the panel is off for this session: drawing failed: ERROR_DEVICE_LOST\n").unwrap()
+            .contains("turned itself off (drawing failed"));
+        assert_eq!(panel("mace: the in-game panel is ready (Roblox pid 4, wayland)\n"), None);
     }
 }

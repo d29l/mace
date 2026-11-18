@@ -1,16 +1,16 @@
-//! The command line. Commands write to the `out` they're given, so the overlay
-//! helper can run them without their output reaching its protocol stream.
+//! The command line. Commands write to the `out` they're given, so the
+//! in-game panel's requests can run them without printing anything.
 
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{anyhow, bail};
 use serde_json::{Map, Value, json};
 
 use crate::accounts::{self, Account};
-use crate::servers::{self, LogFollower};
+use crate::servers;
 use crate::{builds, desktop, doctor, launch, migrate, processes, settings, supervisor};
 
 pub const HELP: &str = "mace: the macOS Roblox client on Linux, on several accounts at once.
@@ -31,9 +31,9 @@ pub const HELP: &str = "mace: the macOS Roblox client on Linux, on several accou
     mace why [ACCOUNT]            what happened at ACCOUNT's last start
     mace migrate                  set up from Nutmeg (once)
     mace integrate [--undo]       menu entries and roblox.com's Play button
-    mace watch [--dry-run]        notifications on every join (the toasts service)
-    mace overlay-state            JSON for the in-game panel
-    mace active                   exit 0 when an account started by Mace is running
+    mace servers ACCOUNT [--fewest] [--json]
+                                  public servers of the game ACCOUNT is in, fullest first
+    mace panel [ACCOUNT]          open or close the in-game panel (for a desktop shortcut)
     mace --version
 
 ACCOUNT is an id (main, alt1, ...), a name given in Mace, a username or a display name.
@@ -246,18 +246,20 @@ fn copy_server(args: &[String], what: &str) -> anyhow::Result<()> {
             accounts::get(latest.0).ok()
         }),
     };
-    let Some(server) = account.and_then(|a| found.get(&a.id).cloned()) else {
-        notify("Not in a server", "Join a Roblox server first", &[], false);
-        return Ok(());
+    let Some((account, server)) = account.and_then(|a| found.get(&a.id).cloned().map(|s| (a, s))) else {
+        bail!("not in a server: join a Roblox server first");
     };
     copy(str_of(&server, what), false);
     let described = servers::describe(&server);
     let name = described.get("name").and_then(Value::as_str).unwrap_or("this server").to_string();
-    if what == "link" {
-        notify("Copied join link", &format!("Anyone with it can join {name}"), &[], false);
+    let (title, body) = if what == "link" {
+        ("Join link copied".to_string(), format!("Anyone with it can join {name}"))
     } else {
-        notify("Copied job ID", &format!("{name}: {}", str_of(&server, "job")), &[], false);
-    }
+        ("Job ID copied".to_string(), format!("{name}: {}", str_of(&server, "job")))
+    };
+    // said in the game; on the command line too, for when it was typed there
+    crate::panel::toast(&account.id, &title, &body);
+    println!("{title}: {body}");
     Ok(())
 }
 
@@ -362,143 +364,55 @@ fn cmd_integrate(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
 }
 
 /// Notify each join, on every account, with a button to copy its link.
-fn cmd_watch(args: &[String], _out: &mut dyn Write) -> anyhow::Result<()> {
-    let dry_run = args.iter().any(|a| a == "--dry-run");
-    let mut followers: HashMap<String, LogFollower> = HashMap::new();
-    let mut quiet: Vec<String> = Vec::new();
-    let mut names: HashMap<String, String> = HashMap::new();
-    let mut next_accounts = Instant::now();
-    loop {
-        if Instant::now() >= next_accounts {
-            next_accounts = Instant::now() + Duration::from_secs(5);
-            for account in accounts::accounts() {
-                names.insert(account.id.clone(), account.name());
-                followers.entry(account.id.clone()).or_insert_with(|| {
-                    quiet.push(account.id.clone()); // what is already logged is not news
-                    LogFollower::new(&account.logs())
-                });
-            }
-        }
-        for (id, follower) in followers.iter_mut() {
-            let joined = follower.poll();
-            if let Some(at) = quiet.iter().position(|q| q == id) {
-                quiet.remove(at);
-                continue;
-            }
-            for server in joined {
-                let many = names.len() > 1;
-                let who = names.get(id).cloned().unwrap_or_else(|| id.clone());
-                std::thread::spawn(move || {
-                    let info = servers::describe(&server);
-                    let place = info.get("location").and_then(Value::as_str).unwrap_or("an unknown location");
-                    let mut body = format!("Server in {place}");
-                    if many {
-                        body.push_str(&format!("\nas {who}"));
-                    }
-                    let title = match info.get("name").and_then(Value::as_str) {
-                        Some(name) => format!("Joined {name}"),
-                        None => "Joined a server".into(),
-                    };
-                    if notify(&title, &body, &[("copy", "Copy join link")], dry_run).as_deref() == Some("copy") {
-                        copy(str_of(&server, "link"), dry_run);
-                    }
-                });
-            }
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-}
 
-/// What the in-game panel shows: the focused Roblox window, its account and
-/// server, and every other account (with its window's address, for switching).
-/// One pass over /proc, one pactl and three hyprctl calls, however many
-/// accounts; a long-running caller passes `followers` to read only what's new.
-pub fn overlay_state(followers: Option<&mut HashMap<String, LogFollower>>) -> Value {
-    let everyone = accounts::accounts();
-    let snapshot = processes::scan();
-    let live = processes::running(&everyone, Some(&snapshot));
-    let windows = processes::windows();
-    let window = processes::active_window();
-    let inputs = if live.is_empty() { Vec::new() } else { processes::sink_inputs() };
-    let monitors = processes::monitors();
-    let window_pid = window.as_ref().and_then(|w| w.get("pid")).and_then(Value::as_i64).unwrap_or(-1) as i32;
-    let focused_id = live.iter().find(|(_, pids)| pids.contains(&window_pid)).map(|(id, _)| id.clone());
-    let focused_monitor = monitors.iter().find(|m| m.get("focused") == Some(&json!(true)))
-        .and_then(|m| m.get("name")).cloned().unwrap_or(Value::Null);
-    let mut followers = followers;
-    let mut rows = Vec::new();
-    for account in &everyone {
-        let who = account.identity();
-        let mut server = Map::new();
-        let mut address = Value::Null;
-        if live.contains_key(&account.id) {
-            let current = match followers.as_deref_mut() {
-                Some(map) => {
-                    let follower = map.entry(account.id.clone()).or_insert_with(|| LogFollower::new(&account.logs()));
-                    follower.poll();
-                    if follower.server.contains_key("ip") { follower.server.clone() } else { Map::new() }
-                }
-                None => servers::current(account).0,
-            };
-            if !current.is_empty() {
-                server = servers::describe(&current);
-            }
-            let pids = processes::prefix_pids(&account.prefix, false, Some(&snapshot));
-            address = windows.iter()
-                .find(|w| w.get("pid").and_then(Value::as_i64).is_some_and(|p| pids.contains(&(p as i32))))
-                .and_then(|w| w.get("address")).cloned().unwrap_or(Value::Null);
-        }
-        let avatar = (!who.is_empty()).then(|| servers::cached_avatar(&who.id)).flatten();
-        let muted = if live.contains_key(&account.id) {
-            json!(processes::muted(account, Some(&snapshot), Some(&inputs)))
-        } else {
-            Value::Null
-        };
-        let server_out = if server.is_empty() {
-            Value::Null
-        } else {
-            let mut picked = Map::new();
-            for key in ["place", "job", "link", "name", "location", "since"] {
-                picked.insert(key.into(), server.get(key).cloned().unwrap_or(Value::Null));
-            }
-            Value::Object(picked)
-        };
-        rows.push(json!({
-            "id": account.id, "name": account.name_with(&who), "username": who.username,
-            "avatar": avatar, "fps": supervisor::read_fps(&account.id),
-            "launch": supervisor::read_status(&account.id).get("state").cloned().unwrap_or(Value::Null),
-            "running": live.contains_key(&account.id), "focused": Some(&account.id) == focused_id.as_ref(),
-            "address": address, "muted": muted, "server": server_out,
-        }));
-    }
-    if let Some(map) = followers {
-        map.retain(|id, _| live.contains_key(id));
-    }
-    let geometry = match (&window, &focused_id) {
-        (Some(window), Some(_)) => {
-            let monitor = monitors.iter().find(|m| m.get("id") == window.get("monitor")).cloned().unwrap_or(json!({}));
-            json!({
-                "x": window["at"][0], "y": window["at"][1], "width": window["size"][0], "height": window["size"][1],
-                "monitor": monitor.get("name"), "address": window.get("address"),
-                "monitor_x": monitor.get("x").cloned().unwrap_or(json!(0)),
-                "monitor_y": monitor.get("y").cloned().unwrap_or(json!(0)),
-            })
-        }
-        _ => Value::Null,
+
+fn cmd_servers(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
+    let json = args.iter().any(|a| a == "--json");
+    let sort = if args.iter().any(|a| a == "--fewest") { mace_proto::Sort::Fewest } else { mace_proto::Sort::Most };
+    let Some(query) = args.iter().find(|a| !a.starts_with("--")) else {
+        bail!("usage: mace servers ACCOUNT [--fewest] [--json]")
     };
-    json!({"focused": focused_id, "window": geometry, "monitor": focused_monitor, "accounts": rows})
-}
-
-fn cmd_overlay_state(_args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
-    writeln!(out, "{}", overlay_state(None))?;
+    let account = accounts::find(query)?;
+    let (server, _) = servers::current(&account);
+    let Some(place) = server.get("place").and_then(Value::as_str) else { bail!("{} isn't in a game", account.name()) };
+    let here = server.get("job").and_then(Value::as_str).unwrap_or("");
+    let page = servers::public_page(place, sort, None);
+    if json {
+        writeln!(out, "{}", serde_json::to_string(&page)?)?;
+        return Ok(());
+    }
+    if !page.error.is_empty() {
+        bail!("{}", page.error);
+    }
+    for s in &page.list {
+        let fps = s.fps.map(|f| format!("{:.0} FPS", f)).unwrap_or_default();
+        let ping = s.ping.map(|p| format!("~{p} ms")).unwrap_or_default();
+        let mark = if s.id == here { "  (you're here)" } else { "" };
+        writeln!(out, "{:>3}/{:<3} {:>7} {:>8}  {}  {}{}", s.playing, s.max, fps, ping, s.id,
+                 s.location.as_deref().unwrap_or(""), mark)?;
+    }
+    if page.next.is_some() {
+        writeln!(out, "(more in the in-game panel)")?;
+    }
     Ok(())
 }
 
-/// Exit status 0 when a Roblox started by Mace (from an account's own copy) runs.
-pub fn mace_running() -> bool {
-    let everyone = accounts::accounts();
-    let live = processes::running(&everyone, None);
-    everyone.iter().any(|a| live.get(&a.id).is_some_and(|pids| processes::from_bundle(pids, &a.bundle())))
+fn cmd_panel(args: &[String], _out: &mut dyn Write) -> anyhow::Result<()> {
+    let args: Vec<&String> = args.iter().filter(|a| *a != "toggle").collect();
+    let account = match args.first() {
+        Some(query) => accounts::find(query)?,
+        None => {
+            let everyone = accounts::accounts();
+            let live = processes::running(&everyone, None);
+            let mut running = everyone.into_iter().filter(|a| live.contains_key(&a.id));
+            match (running.next(), running.next()) {
+                (Some(only), None) => only,
+                (None, _) => bail!("no account is running"),
+                _ => bail!("several accounts are running: mace panel ACCOUNT"),
+            }
+        }
+    };
+    crate::panel::toggle(&account)
 }
 
 pub type CommandFn = fn(&[String], &mut dyn Write) -> anyhow::Result<()>;
@@ -524,8 +438,8 @@ pub fn command(name: &str) -> Option<CommandFn> {
         "why" => cmd_why,
         "migrate" => cmd_migrate,
         "integrate" => cmd_integrate,
-        "watch" => cmd_watch,
-        "overlay-state" => cmd_overlay_state,
+        "servers" => cmd_servers,
+        "panel" => cmd_panel,
         _ => return None,
     })
 }
@@ -542,8 +456,6 @@ pub fn run(args: &[String]) -> i32 {
             println!("{HELP}");
             return 0;
         }
-        "active" => return if mace_running() { 0 } else { 1 },
-        "overlay-helper" => return crate::helper::serve(),
         "loading" => {
             let Some(id) = args.get(1) else { return 2 };
             return crate::ui::run_loading(id);

@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -258,6 +258,57 @@ pub fn stop(account: &Account, accounts: &[Account], grace: Duration) -> bool {
         std::thread::sleep(Duration::from_millis(100));
     }
     alive().is_empty()
+}
+
+/// The prefix's process server, if one runs: its pid and the directory it serves.
+fn process_server(prefix: &Path, snapshot: &Snapshot) -> Option<(i32, PathBuf)> {
+    let want = real(prefix);
+    snapshot.iter().find_map(|(pid, p)| {
+        if p.prefix != want || !p.args.iter().skip(1).take(2).any(|a| a == b"server") {
+            return None;
+        }
+        let at = p.args.iter().position(|a| a == b"--directory")?;
+        Some((*pid, PathBuf::from(String::from_utf8_lossy(p.args.get(at + 1)?).into_owned())))
+    })
+}
+
+/// Before a client starts in an account's prefix, nothing of an earlier one
+/// may linger. Roblox's helpers (the menu bar, the crash handler) can outlive
+/// its client, and Rosemary's process server stays "shutting down" while
+/// they're around: a client started then can't be seen by later `rosemary
+/// run`s, so a link handed to it starts a second client instead (which signs
+/// in and gets the first one kicked). Stops the helpers, and waits for a
+/// server on its way out to finish. Returns how many helpers were stopped.
+pub fn clear_leftovers(account: &Account, accounts: &[Account]) -> usize {
+    let snapshot = scan();
+    if running(accounts, Some(&snapshot)).contains_key(&account.id) {
+        return 0; // a client runs: nothing is left over
+    }
+    let helpers = prefix_pids(&account.prefix, false, Some(&snapshot));
+    for pid in &helpers {
+        // SAFETY: plain kill of a pid of ours.
+        unsafe { libc::kill(*pid, libc::SIGKILL) };
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let now = scan();
+        let lingering = !prefix_pids(&account.prefix, false, Some(&now)).is_empty();
+        let server = process_server(&account.prefix, &now);
+        let healthy = server.as_ref()
+            .is_some_and(|(_, dir)| std::os::unix::net::UnixStream::connect(dir.join("socket")).is_ok());
+        if !lingering && (server.is_none() || healthy) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            if let Some((pid, _)) = server.filter(|_| !healthy) {
+                // SAFETY: plain kill of a pid of ours (a server that wouldn't finish).
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    helpers.len()
 }
 
 // ---------------------------------------------------------------- sound

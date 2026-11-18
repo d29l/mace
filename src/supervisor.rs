@@ -133,9 +133,14 @@ fn open_loading_window(account_id: &str, config: &Settings) {
         .spawn();
 }
 
-pub fn notify(title: &str, body: &str) {
+/// Tell the player something about an account: in its game, when its panel is
+/// there; otherwise as a desktop notification, but only if `or_desktop`.
+pub fn notify(account_id: &str, title: &str, body: &str, or_desktop: bool) {
     if cfg!(test) {
         return; // never on the desktop of whoever runs the tests
+    }
+    if crate::panel::toast(account_id, title, body) || !or_desktop {
+        return;
     }
     crate::cli::notify(title, body, &[], false);
 }
@@ -161,10 +166,10 @@ fn learn_browser_user(account: Account, since: f64) {
                             Some(other) => format!("{}'s Roblox from now on.", other.name()),
                             None => "the first account from now on.".into(),
                         };
-                        notify(&format!("{} is signed in as another account now", account.name()),
+                        notify(&account.id, &format!("{} is signed in as another account now", account.name()),
                                &format!("roblox.com links sign Roblox in as the browser's account ({browser}), so \
                                          {name}'s Roblox now is that account. Sign {name} back in from its Roblox \
-                                         window. Links open in {next}", name = account.name()));
+                                         window. Links open in {next}", name = account.name()), true);
                     }
                     return;
                 }
@@ -183,10 +188,20 @@ fn updater_logged(account: &Account, since: f64) -> bool {
 
 /// Copy the client's output to its log, except Rosemary's statistics, which
 /// become the frame rate; they also turn up in the middle of a line of Roblox's.
+/// What Rosemary says when a process can't reach the prefix's process server:
+/// a client that says so can't be handed links (`launch::hand_over`).
+const BLIND: &[u8] = b"process server is unavailable";
+
+/// Present while this account's client can't be handed links.
+pub fn blind_marker(account_id: &str) -> PathBuf {
+    paths::runtime().join(format!("blind-{account_id}"))
+}
+
 pub fn pump(stream: impl std::io::Read, log_path: &Path, account_id: &str) {
     let stats_file = stats_dir().join(format!("{account_id}.json"));
     let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(log_path) else { return };
     let marker: &[u8] = b"rosemary: Metal:";
+    let mut blind = false;
     let mut reader = BufReader::new(stream);
     let mut line = Vec::new();
     loop {
@@ -194,6 +209,13 @@ pub fn pump(stream: impl std::io::Read, log_path: &Path, account_id: &str) {
         match reader.read_until(b'\n', &mut line) {
             Ok(0) | Err(_) => break,
             Ok(_) => {}
+        }
+        if !blind && line.windows(BLIND.len()).any(|w| w == BLIND) {
+            blind = true;
+            let _ = std::fs::create_dir_all(paths::runtime());
+            let _ = std::fs::write(blind_marker(account_id), b"");
+            let _ = log.write_all(b"mace: this Roblox can't be handed links (Rosemary's process server was shutting \
+                                   down when it started); joins will restart it instead\n");
         }
         match line.windows(marker.len()).position(|w| w == marker) {
             Some(at) => {
@@ -261,8 +283,13 @@ const SESSION_POLL: Duration = Duration::from_millis(500);
 
 /// A line of Mace's own in the account's log.
 fn note(account: &Account, text: &str) {
+    note_for(&account.id, text);
+}
+
+/// A line in the account's log, marked as Mace's.
+pub fn note_for(account_id: &str, text: &str) {
     if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true)
-        .open(paths::logs().join(format!("{}.log", account.id)))
+        .open(paths::logs().join(format!("{account_id}.log")))
     {
         let _ = writeln!(log, "mace: {text}");
     }
@@ -277,6 +304,12 @@ fn run_client(account: &Account, bundle: &Path, url: Option<&str>, config: &Sett
         env.insert("ROSEMARY_METAL_STATS".into(), "1".into());
     }
     std::fs::create_dir_all(paths::logs())?;
+    // a client started next to an earlier one's leftovers can't be handed links later
+    let cleared = processes::clear_leftovers(account, &crate::accounts::accounts());
+    if cleared > 0 {
+        note(account, &format!("stopped {cleared} process(es) an earlier Roblox left in this prefix"));
+    }
+    let _ = std::fs::remove_file(blind_marker(&account.id));
     let started = unix_time();
     let clock = Instant::now();
     let (reader, writer) = std::io::pipe()?;
@@ -351,6 +384,8 @@ pub fn run(account_id: &str, url: Option<&str>) -> i32 {
     };
     let config = settings::load();
     let report = Reporter::new(&account, url);
+    // the in-game panel asks this process what to show, for as long as the account runs
+    let _panel = crate::panel::Server::start(&account);
     open_loading_window(&account.id, &config);
     if url.is_some_and(|u| u.starts_with("roblox-player:") && u.contains("gameinfo:")) {
         let (who, since) = (account.clone(), unix_time());
@@ -358,7 +393,8 @@ pub fn run(account_id: &str, url: Option<&str>) -> i32 {
     }
     let fail = |message: &str| {
         report.set("failed", message, None);
-        notify(&format!("{} didn't start", account.name()), message);
+        // the loading window says so; the desktop only hears of it when that window is off
+        notify(&account.id, &format!("{} didn't start", account.name()), message, !config.loading_screen);
         1
     };
     let mut build: Option<Build> = None;
