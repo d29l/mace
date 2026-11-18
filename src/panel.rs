@@ -488,17 +488,28 @@ fn modified(path: &Path) -> Option<SystemTime> {
     path.metadata().and_then(|m| m.modified()).ok()
 }
 
-/// A toast when a newer Mace is out: a minute into the game, after the join's
-/// own, and once a day at most whatever the number of games.
+/// A toast when a newer Mace is out: a minute into the game (after the join's
+/// own), then asked again every hour, and told again only for a newer one.
 fn tell_about_update(shared: &Shared) {
-    std::thread::sleep(Duration::from_secs(60));
-    if shared.stopped.load(Ordering::Relaxed) || !upgrade::announce_due() {
-        return;
-    }
-    let Some(version) = upgrade::available() else { return };
-    let toast = ToPanel::Toast { title: format!("Mace {version} is out"), body: "Open Mace Settings to update".into() };
-    if shared.to_panels(&toast) {
-        upgrade::announced();
+    let mut told: Option<String> = None;
+    let mut wait = Duration::from_secs(60);
+    loop {
+        let until = std::time::Instant::now() + wait;
+        while std::time::Instant::now() < until {
+            if shared.stopped.load(Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(Duration::from_secs(5));
+        }
+        wait = upgrade::EVERY;
+        let Some(version) = upgrade::available().filter(|v| told.as_deref() != Some(v.as_str())) else { continue };
+        let toast = ToPanel::Toast { title: format!("Mace {version} is out"), body: "Open Mace Settings to update".into() };
+        if shared.to_panels(&toast) {
+            told = Some(version);
+        } else {
+            // no panel to show it yet
+            wait = Duration::from_secs(60);
+        }
     }
 }
 

@@ -20,8 +20,11 @@ const LATEST: &str = "https://api.github.com/repos/d29l/mace/releases/latest";
 /// A release's download: a `mace-VERSION` folder with the program, the
 /// panel's library, Mace's files and install.sh (made by dev/package.sh).
 pub const TARBALL: &str = "mace-x86_64-linux.tar.gz";
-/// GitHub is asked at most once a day.
-const DAY: u64 = 24 * 60 * 60;
+/// What GitHub said is reused for this long (seconds), so games starting
+/// together ask it once.
+const REUSE: u64 = 10 * 60;
+/// While Mace Settings is open or a game runs, GitHub is asked again this often.
+pub const EVERY: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Release {
@@ -34,9 +37,9 @@ fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-/// `then` was less than a day before `now` (a time in the future doesn't count).
-fn within_a_day(then: u64, now: u64) -> bool {
-    then <= now && now - then < DAY
+/// What was learned at `then` can still be used at `now` (a time in the future can't).
+fn fresh(then: u64, now: u64) -> bool {
+    then <= now && now - then < REUSE
 }
 
 /// "v1.2.3" or "1.2.3" → [1, 2, 3]
@@ -111,10 +114,10 @@ fn remember(version: Option<&str>) {
     note("checked", json!(now()));
 }
 
-/// The newest version there is, asking GitHub at most once a day.
+/// The newest version there is, asking GitHub unless it was asked in the last ten minutes.
 pub fn newest() -> anyhow::Result<Option<String>> {
     let map = record();
-    if map.get("checked").and_then(Value::as_u64).is_some_and(|t| within_a_day(t, now())) {
+    if map.get("checked").and_then(Value::as_u64).is_some_and(|t| fresh(t, now())) {
         return Ok(map.get("newest").and_then(Value::as_str).map(String::from));
     }
     let version = latest()?.map(|r| r.version);
@@ -128,15 +131,6 @@ pub fn available() -> Option<String> {
         return None;
     }
     newest().ok().flatten().filter(|v| is_newer(v, VERSION))
-}
-
-/// Whether a game may mention the new version now: once a day at most.
-pub fn announce_due() -> bool {
-    !record().get("announced").and_then(Value::as_u64).is_some_and(|t| within_a_day(t, now()))
-}
-
-pub fn announced() {
-    note("announced", json!(now()));
 }
 
 /// Install the newest release when it's newer than this one. Returns its version.
@@ -170,7 +164,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// One update at a time (the window's button, `mace upgrade`).
+/// One update at a time (the window's button, `mace update`).
 fn lock(dir: &Path) -> anyhow::Result<fs::File> {
     let file = fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(".update.lock"))?;
     // SAFETY: flock on a descriptor this file owns; it's let go when the file closes.
@@ -267,7 +261,7 @@ mod tests {
         assert!(!is_newer("0.1.0", "0.1.0"));
         assert!(!is_newer("0.1.0", "0.2.0"));
         assert!(!is_newer("0.2", "0.1.0") && !is_newer("0.2.0-rc1", "0.1.0") && !is_newer("", "0.1.0"));
-        assert!(within_a_day(100, 100 + DAY - 1) && !within_a_day(100, 100 + DAY) && !within_a_day(200, 100));
+        assert!(fresh(100, 100 + REUSE - 1) && !fresh(100, 100 + REUSE) && !fresh(200, 100));
     }
 
     /// A web server on a free local port, for the files `make` gives (it gets
@@ -392,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn github_is_asked_once_a_day() {
+    fn games_starting_together_ask_github_once() {
         let _home = TempHome::new();
         let (base, hits) = serve(|base| vec![("/latest".into(), release_json(base, "9.9.9"))]);
         // SAFETY: TempHome holds the lock for tests that touch the environment.
@@ -400,18 +394,14 @@ mod tests {
         assert_eq!(newest().unwrap().as_deref(), Some("9.9.9"));
         assert_eq!(newest().unwrap().as_deref(), Some("9.9.9"));
         assert_eq!(hits.load(Ordering::SeqCst), 1);
-        // a day later
-        note("checked", json!(now() - DAY));
+        // ten minutes later it's asked again
+        note("checked", json!(now() - REUSE));
         assert_eq!(newest().unwrap().as_deref(), Some("9.9.9"));
         assert_eq!(hits.load(Ordering::SeqCst), 2);
         // no releases yet
         unsafe { std::env::set_var("MACE_RELEASES_URL", format!("{base}/nothing")) };
         assert_eq!(latest().unwrap(), None);
         unsafe { std::env::remove_var("MACE_RELEASES_URL") };
-        // games mention it once a day
-        assert!(announce_due());
-        announced();
-        assert!(!announce_due());
     }
 
     #[test]

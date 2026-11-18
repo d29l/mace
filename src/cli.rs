@@ -27,7 +27,7 @@ pub const HELP: &str = "mace: macOS Roblox on Linux, with multiple accounts.
     mace job [ACCOUNT]            copy the job ID
     mace focus ACCOUNT            focus ACCOUNT's window
     mace mute ACCOUNT [on|off]    mute or unmute (toggles without on/off)
-    mace update [ACCOUNT|--all]   update Roblox
+    mace update [ACCOUNT]         update Mace, then Roblox (every account, or ACCOUNT)
     mace gc                       delete unused builds
     mace why [ACCOUNT]            explain the last start
     mace migrate                  import from Nutmeg
@@ -35,7 +35,6 @@ pub const HELP: &str = "mace: macOS Roblox on Linux, with multiple accounts.
     mace servers ACCOUNT [--fewest] [--json]
                                   list the game's public servers
     mace panel [ACCOUNT]          toggle the in-game panel
-    mace upgrade                  update Mace itself
     mace --version
 
 ACCOUNT: an id (main, alt1, ...), name, username or display name.
@@ -334,7 +333,20 @@ fn progress_bar(label: String) -> impl FnMut(u64, u64) {
     }
 }
 
+/// Mace itself (when this copy updates itself), then Roblox.
 fn cmd_update(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
+    if upgrade::installed_copy().is_some() {
+        match upgrade::update_now() {
+            Ok(Some(version)) => writeln!(out, "Mace {version} installed; games already running keep the old one")?,
+            Ok(None) => writeln!(out, "Mace {} is up to date", crate::VERSION)?,
+            Err(error) => eprintln!("couldn't update Mace: {error:#}"),
+        }
+    }
+    update_roblox(args, out)
+}
+
+/// Roblox for every account, or the one named.
+fn update_roblox(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
     let everyone = args.is_empty() || args.iter().any(|a| a == "--all");
     let targets = if everyone { accounts::accounts() } else { vec![accounts::find(&args[0])?] };
     let live = live();
@@ -384,7 +396,8 @@ fn cmd_migrate(_args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
         writeln!(out, "{line}")?;
     }
     writeln!(out, "updating:")?;
-    cmd_update(&["--all".into()], out)
+    // Roblox only: install.sh runs this, and a fresh install isn't to be replaced by a release
+    update_roblox(&["--all".into()], out)
 }
 
 fn cmd_integrate(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
@@ -427,19 +440,6 @@ fn cmd_servers(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
     }
     if page.next.is_some() {
         writeln!(out, "(more in the in-game panel)")?;
-    }
-    Ok(())
-}
-
-fn cmd_upgrade(_args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
-    if upgrade::installed_copy().is_none() {
-        bail!("this Mace runs from {}, not the copy install.sh makes: update it with git pull and ./install.sh",
-              launch::mace_exe().display());
-    }
-    writeln!(out, "looking for a newer Mace than {}", crate::VERSION)?;
-    match upgrade::update_now()? {
-        Some(version) => writeln!(out, "Mace {version} installed; games already running keep the old one")?,
-        None => writeln!(out, "Mace {} is up to date", crate::VERSION)?,
     }
     Ok(())
 }
@@ -487,7 +487,6 @@ pub fn command(name: &str) -> Option<CommandFn> {
         "integrate" => cmd_integrate,
         "servers" => cmd_servers,
         "panel" => cmd_panel,
-        "upgrade" => cmd_upgrade,
         _ => return None,
     })
 }

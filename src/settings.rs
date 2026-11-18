@@ -90,7 +90,7 @@ pub struct Settings {
     /// name: 0.1.0 had it on by default and saved that as `anti_afk`.
     #[serde(rename = "anti_afk_opt_in")]
     pub anti_afk: bool,
-    /// Ask GitHub once a day for a newer Mace (only the copy install.sh puts in ~/.local/bin updates itself).
+    /// Ask GitHub for a newer Mace when it starts and every hour (only the copy install.sh puts in ~/.local/bin updates itself).
     pub check_updates: bool,
     /// The in-game panel's key, e.g. "INSERT" or "SHIFT + F1" (the game has to receive it).
     pub overlay_key: String,

@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use adw::prelude::*;
-use gtk::gio;
+use gtk::{gio, glib};
 
 use super::widgets::background;
 use crate::upgrade;
@@ -16,15 +16,18 @@ use crate::upgrade;
 static RESTART: AtomicBool = AtomicBool::new(false);
 
 enum State {
-    /// Nothing to offer, or the update is being installed.
+    /// Nothing to offer.
     Quiet,
     /// This version is out.
     Out(String),
+    /// Being installed.
+    Busy,
     /// Installed: the button restarts Mace.
     Installed,
 }
 
-/// The bar, hidden until GitHub has a newer version.
+/// The bar, hidden until GitHub has a newer version: asked when the window
+/// opens and every hour while it's open.
 pub fn bar(window: &adw::ApplicationWindow, toast: impl Fn(&str) + 'static) -> adw::Banner {
     let banner = adw::Banner::new("");
     let state = Rc::new(RefCell::new(State::Quiet));
@@ -32,7 +35,7 @@ pub fn bar(window: &adw::ApplicationWindow, toast: impl Fn(&str) + 'static) -> a
     let window = window.downgrade();
     banner.connect_button_clicked({
         let state = state.clone();
-        move |banner| match state.replace(State::Quiet) {
+        move |banner| match state.replace(State::Busy) {
             State::Out(version) => {
                 banner.set_title(&format!("Updating to Mace {version}…"));
                 banner.set_button_label(None);
@@ -43,7 +46,10 @@ pub fn bar(window: &adw::ApplicationWindow, toast: impl Fn(&str) + 'static) -> a
                         banner.set_button_label(Some("Restart"));
                         state.replace(State::Installed);
                     }
-                    Ok(None) => banner.set_revealed(false),
+                    Ok(None) => {
+                        banner.set_revealed(false);
+                        state.replace(State::Quiet);
+                    }
                     Err(error) => {
                         toast(&format!("Couldn't update: {error}"));
                         offer(&banner, &state, version);
@@ -51,21 +57,43 @@ pub fn bar(window: &adw::ApplicationWindow, toast: impl Fn(&str) + 'static) -> a
                 });
             }
             State::Installed => {
+                state.replace(State::Installed);
                 RESTART.store(true, Ordering::Relaxed);
                 if let Some(window) = window.upgrade() {
                     window.close();
                 }
             }
-            State::Quiet => {}
+            other => {
+                state.replace(other);
+            }
         }
     });
-    let (shown, state) = (banner.clone(), state.clone());
-    background(upgrade::available, move |newer| {
-        if let Some(version) = newer {
-            offer(&shown, &state, version);
+    check(&banner, &state);
+    let weak = banner.downgrade();
+    glib::timeout_add_seconds_local(upgrade::EVERY.as_secs() as u32, move || match weak.upgrade() {
+        Some(banner) => {
+            check(&banner, &state);
+            glib::ControlFlow::Continue
         }
+        None => glib::ControlFlow::Break,
     });
     banner
+}
+
+/// Ask GitHub, off the main loop, and offer what it has; not while an update
+/// is being installed or waits for a restart.
+fn check(banner: &adw::Banner, state: &Rc<RefCell<State>>) {
+    if !matches!(*state.borrow(), State::Quiet | State::Out(_)) {
+        return;
+    }
+    let (banner, state) = (banner.clone(), state.clone());
+    background(upgrade::available, move |newer| {
+        if let Some(version) = newer
+            && matches!(*state.borrow(), State::Quiet | State::Out(_))
+        {
+            offer(&banner, &state, version);
+        }
+    });
 }
 
 fn offer(banner: &adw::Banner, state: &RefCell<State>, version: String) {

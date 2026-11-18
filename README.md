@@ -88,10 +88,10 @@ Run `mace --help` for everything else.
 
 ## Update
 
-Mace checks for a new version once a day. When there is one, Mace Settings
-shows an Update button and your game shows a toast; `mace upgrade` installs it
-from a terminal. Games that are running keep the old version until they're
-restarted.
+Mace checks for a new version when it starts, and every hour while it runs.
+When there is one, Mace Settings shows an Update button and your game shows a
+toast. From a terminal, `mace update` installs it and updates Roblox. Games
+that are running keep the old version until they're restarted.
 
 A copy installed with `./install.sh --dev` doesn't update itself: run
 `git pull` and `./install.sh --dev` again.

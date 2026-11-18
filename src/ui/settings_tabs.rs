@@ -161,7 +161,7 @@ impl GlobalSettings {
         if crate::upgrade::installed_copy().is_some() {
             let group = adw::PreferencesGroup::builder().title("Updates").description(format!("Mace {}", crate::VERSION)).build();
             page.add(&group);
-            let check = adw::SwitchRow::builder().title("Check for updates").subtitle("Once a day")
+            let check = adw::SwitchRow::builder().title("Check for updates").subtitle("When Mace starts, and every hour")
                 .active(s.check_updates).build();
             group.add(&check);
             check.connect_active_notify({ let c = changed.clone(); move |_| c() });
