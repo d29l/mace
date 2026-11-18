@@ -98,7 +98,7 @@ impl ModsTab {
             .child(&adw::ButtonContent::builder().icon_name("folder-open-symbolic").label("Open folder").build())
             .css_classes(["flat"]).build();
         let files = adw::PreferencesGroup::builder().title("Files")
-            .description("Files in the mods folder replace Roblox's own at the same path, like Bloxstrap's mods.")
+            .description("Files in the mods folder replace Roblox's own at the same path.")
             .header_suffix(&open).build();
         page.add(&files);
 
