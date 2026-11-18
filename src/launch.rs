@@ -184,7 +184,7 @@ pub fn prepare(account: &Account, progress: &mut dyn FnMut(u64, u64), config: &S
     let bundle = match build.or_else(|| builds::wanted(account, url)) {
         Some(build) => builds::provision(account, &build, progress)?,
         None if account.bundle().exists() => account.bundle(),
-        None => bail!("can't find out which Roblox to download (is the internet down?)"),
+        None => bail!("can't look up the Roblox version (offline?)"),
     };
     builds::write_fast_flags(&bundle, &s.fast_flags)?;
     if s.fps_cap > 0 {
@@ -327,7 +327,7 @@ fn hand_over(account: &Account, argv: &[String], env: &Env) -> anyhow::Result<Ha
         if let Some(status) = child.try_wait()?
             && !status.success()
         {
-            bail!("Rosemary couldn't give {} the link", account.name());
+            bail!("Rosemary couldn't hand {} the link", account.name());
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
@@ -378,8 +378,7 @@ pub fn start(account: &Account, link: Option<&str>, dry_run: bool, remember: boo
             return Ok(argv);
         }
         // it can't be handed links: start it again, into that server, rather than have two sign in
-        supervisor::note_for(&account.id, "Rosemary couldn't reach the running Roblox to hand it the link; \
-                                           restarting it into that server instead");
+        supervisor::note_for(&account.id, "couldn't hand the link to the running Roblox; restarting it into the server");
         processes::stop(account, &accounts::accounts(), std::time::Duration::from_secs(2));
     }
     let mut argv = vec![mace_exe().to_string_lossy().into_owned(), "supervise".into(), account.id.clone()];

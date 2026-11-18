@@ -67,7 +67,7 @@ for unit in mace-toasts.service mace-overlay.service; do
 done
 if [ -n "$removed" ]; then
     systemctl --user daemon-reload
-    echo "removed:$removed (toasts and the panel are in the game now)"
+    echo "removed old services:$removed"
 fi
 case $removed in *mace-overlay*)
     if [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v hyprctl >/dev/null; then
@@ -75,4 +75,4 @@ case $removed in *mace-overlay*)
         hyprctl eval "hl.unbind(\"${key:-SUPER + TAB}\")" >/dev/null 2>&1 || true
     fi ;;
 esac
-echo "in-game panel: press Insert in a game started by Mace (or the key set in Mace's settings)"
+echo "in-game panel: Insert by default (changeable in settings)"

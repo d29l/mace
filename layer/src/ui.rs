@@ -355,8 +355,8 @@ fn since(seconds: f64) -> String {
     let minutes = ((now() - seconds) / 60.0).max(0.0) as u64;
     match minutes {
         0 => "just joined".into(),
-        1..=59 => format!("{minutes} min here"),
-        _ => format!("{} h {} min here", minutes / 60, minutes % 60),
+        1..=59 => format!("{minutes} min"),
+        _ => format!("{} h {} min", minutes / 60, minutes % 60),
     }
 }
 
@@ -585,10 +585,10 @@ impl Ui {
                     right = rect.min.x - 8.0;
                     let response = bar_button(ui, c, rect, salt, icon, text, look, enabled, count);
                     let tip = match salt {
-                        "link" => "Copy the join link",
-                        "alts" => "Your other accounts",
-                        "servers" => "This game's public servers",
-                        _ => "Join this server again",
+                        "link" => "Copy join link",
+                        "alts" => "Alts",
+                        "servers" => "Servers",
+                        _ => "Rejoin",
                     };
                     if response.on_hover_text(tip).clicked() {
                         clicked.push(salt);
@@ -599,7 +599,7 @@ impl Ui {
                         "link" => {
                             if let Some(server) = &me.server {
                                 actions.push(Action::Copy(server.link.clone()));
-                                self.toast("Join link copied", "Anyone with it can join this server");
+                                self.say("Link copied");
                             }
                         }
                         "alts" => self.open_drop(Drop::Alts),
@@ -636,7 +636,7 @@ impl Ui {
                     }
                     None => two_lines(&painter, c, server_left, mid, server_room,
                                       if me.running { "Not in a game" } else { "Starting…" },
-                                      "Join a game and it shows up here"),
+                                      ""),
                 }
             });
     }
@@ -672,7 +672,7 @@ impl Ui {
             .collect();
         title(ui, c, "Alts", 16.0);
         if others.is_empty() {
-            small(ui, c, "No other accounts yet: add them in Mace's window");
+            small(ui, c, "No other accounts");
             return;
         }
         let height = (ui.max_rect().bottom() - ui.cursor().top()).max(120.0);
@@ -685,12 +685,12 @@ impl Ui {
             }
             if !addable.is_empty() {
                 ui.add_space(4.0);
-                heading(ui, c, if here.is_some() { "Bring one here" } else { "Start one" });
+                heading(ui, c, if here.is_some() { "Add to this server" } else { "Start" });
                 if here.is_some() && addable.len() > 1
-                    && self.pick_row(ui, c, None, "Everyone", "Every other account joins this server", &d.avatars).clicked()
+                    && self.pick_row(ui, c, None, "Everyone", "All your accounts", &d.avatars).clicked()
                 {
                     self.run(actions, &["gather", &me.id]);
-                    self.say("Calling every account here…");
+                    self.say("Bringing everyone…");
                     self.drop = Drop::None;
                 }
                 for alt in &addable {
@@ -804,7 +804,7 @@ impl Ui {
     fn join(&mut self, actions: &mut Vec<Action>, me: &str, server: &PublicServer) {
         let target = format!("{} {}", self.browser.place, server.id);
         self.run(actions, &["start", me, &target]);
-        self.say("Joining that server…");
+        self.say("Joining server…");
         actions.push(Action::Close);
     }
 
@@ -836,7 +836,7 @@ impl Ui {
         let fullest = others.iter().filter(|s| s.playing < s.max).max_by_key(|s| s.playing).cloned();
         let closest = others.iter().filter(|s| s.ping.is_some()).min_by_key(|s| s.ping).cloned();
         ui.horizontal_wrapped(|ui| {
-            for (label, pick) in [("Emptiest", emptiest), ("Fullest with room", fullest), ("Lowest ping", closest)] {
+            for (label, pick) in [("Emptiest", emptiest), ("Fullest", fullest), ("Lowest ping", closest)] {
                 let response = ui.add_enabled_ui(pick.is_some(), |ui| text_button(ui, c, label, false)).inner;
                 if response.clicked()
                     && let Some(server) = pick
@@ -862,7 +862,7 @@ impl Ui {
             } else if self.browser.waiting.is_some() {
                 small(ui, c, "Loading servers…");
             } else {
-                small(ui, c, "No public servers with room right now");
+                small(ui, c, "No open servers");
             }
             return;
         }
@@ -968,9 +968,9 @@ fn server_row(ui: &mut EUi, c: Colors, s: &PublicServer, here: bool) -> Response
         ui.painter().text(middle + vec2(0.0, 9.0), Align2::LEFT_CENTER, place, regular(12.5), c.subtext);
     }
     if here {
-        ui.painter().text(pos2(inner.max.x, inner.center().y), Align2::RIGHT_CENTER, "You're here", bold(12.5), c.text);
+        ui.painter().text(pos2(inner.max.x, inner.center().y), Align2::RIGHT_CENTER, "Current", bold(12.5), c.text);
     }
-    response.on_hover_text_at_pointer(if here { "The server you're in" } else { "Join this server" })
+    response
 }
 
 #[cfg(test)]

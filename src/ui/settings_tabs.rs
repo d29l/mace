@@ -81,72 +81,80 @@ impl GlobalSettings {
         }
     }
 
+    /// The everyday settings, most used first.
     fn build_general(self: &Rc<Self>, s: &Settings) {
         let page = &self.general;
         let changed = self.on_change();
 
         let group = adw::PreferencesGroup::builder()
-            .title("Rosemary")
-            .description("Changes are saved as you make them and apply at the next start.")
+            .title("In-game panel")
+            .description("Applies to games started afterwards.")
             .build();
         page.add(&group);
-        let runners = runner::butter_runners();
-        let mut choices = vec![("auto".to_string(), "Newest Butter runner".to_string())];
-        choices.extend(runners.iter().map(|r| (r.path.to_string_lossy().into_owned(), r.name.clone())));
-        if !choices.iter().any(|(v, _)| *v == s.rosemary) {
-            choices.push((s.rosemary.clone(), s.rosemary.clone()));
-        }
-        let row = combo("Runner", &choices, &s.rosemary, if runners.is_empty() { "Butter has no runners installed" } else { "" });
-        group.add(&row);
-        row.connect_selected_notify({ let c = changed.clone(); move |_| c() });
-        self.saver(move |t| t.rosemary = chosen(&row, &choices));
+        let panel = adw::SwitchRow::builder().title("Show the panel").active(s.panel).build();
+        let key = adw::EntryRow::builder().title("Key (e.g. INSERT, SHIFT + F1)").text(&s.overlay_key).build();
+        let blur = adw::SwitchRow::builder().title("Blur the game behind it")
+            .subtitle("Otherwise dimmed").active(s.panel_blur).build();
+        group.add(&panel);
+        group.add(&key);
+        group.add(&blur);
+        panel.connect_active_notify({ let c = changed.clone(); move |_| c() });
+        key.connect_changed({ let c = changed.clone(); move |_| c() });
+        blur.connect_active_notify({ let c = changed.clone(); move |_| c() });
+        self.saver(move |t| t.panel = panel.is_active());
+        self.saver(move |t| t.overlay_key = key.text().trim().to_string());
+        self.saver(move |t| t.panel_blur = blur.is_active());
 
         let group = adw::PreferencesGroup::builder()
             .title("Frame rate")
-            .description("Roblox caps its FPS at the refresh rate it's told and at its own frame-rate setting, \
-                          whose menu stops at 240.")
+            .description("Roblox caps FPS at the refresh rate it sees and at its own cap.")
             .build();
         page.add(&group);
+        let cap = spin("Frame-rate cap", s.fps_cap, 100000.0, "0 = unchanged");
+        let refresh = spin("Refresh rate Roblox sees", s.refresh_rate, 100000.0, "0 = the real rate");
         let modes = pairs(&PRESENTATION_CHOICES);
         let mode = combo("Presentation mode", &modes, &s.presentation_mode, "");
-        let refresh = spin("Refresh rate Roblox sees", s.refresh_rate, 100000.0, "0 = the screen's real one");
-        let cap = spin("Frame-rate cap", s.fps_cap, 100000.0, "Roblox's own setting; 0 = leave it as it is");
-        group.add(&mode);
-        group.add(&refresh);
         group.add(&cap);
-        mode.connect_selected_notify({ let c = changed.clone(); move |_| c() });
-        refresh.connect_value_notify({ let c = changed.clone(); move |_| c() });
+        group.add(&refresh);
+        group.add(&mode);
         cap.connect_value_notify({ let c = changed.clone(); move |_| c() });
-        self.saver(move |t| t.presentation_mode = chosen(&mode, &modes));
-        self.saver(move |t| t.refresh_rate = refresh.value() as u64);
+        refresh.connect_value_notify({ let c = changed.clone(); move |_| c() });
+        mode.connect_selected_notify({ let c = changed.clone(); move |_| c() });
         self.saver(move |t| t.fps_cap = cap.value() as u64);
+        self.saver(move |t| t.refresh_rate = refresh.value() as u64);
+        self.saver(move |t| t.presentation_mode = chosen(&mode, &modes));
 
-        let group = adw::PreferencesGroup::builder().title("Window and input").build();
+        let group = adw::PreferencesGroup::builder().title("Controls").build();
         page.add(&group);
-        let decorations = pairs(&[("server", "Your desktop's"), ("client", "Mac style")]);
-        let menus = pairs(&[("none", "Hidden"), ("strip", "Strip under the title bar"), ("titlebar", "In the title bar")]);
-        let deco = combo("Title bar", &decorations, &s.decorations, "");
-        let menu = combo("Mac menu bar", &menus, &s.menu, "");
         let edit = adw::SwitchRow::builder().title("Ctrl for copy and paste")
-            .subtitle("Ctrl+C, V, X, A, Z act as Cmd in text fields").active(s.control_edit_keys).build();
+            .subtitle("In text fields").active(s.control_edit_keys).build();
         let confine = adw::SwitchRow::builder().title("Keep the pointer in the window").active(s.confine_pointer).build();
-        group.add(&deco);
-        group.add(&menu);
         group.add(&edit);
         group.add(&confine);
-        deco.connect_selected_notify({ let c = changed.clone(); move |_| c() });
-        menu.connect_selected_notify({ let c = changed.clone(); move |_| c() });
         edit.connect_active_notify({ let c = changed.clone(); move |_| c() });
         confine.connect_active_notify({ let c = changed.clone(); move |_| c() });
-        self.saver(move |t| t.decorations = chosen(&deco, &decorations));
-        self.saver(move |t| t.menu = chosen(&menu, &menus));
         self.saver(move |t| t.control_edit_keys = edit.is_active());
         self.saver(move |t| t.confine_pointer = confine.is_active());
+
+        let group = adw::PreferencesGroup::builder().title("Starting").build();
+        page.add(&group);
+        let loading = adw::SwitchRow::builder().title("Loading window")
+            .subtitle("Shows progress while Roblox starts").active(s.loading_screen).build();
+        group.add(&loading);
+        loading.connect_active_notify({ let c = changed.clone(); move |_| c() });
+        self.saver(move |t| t.loading_screen = loading.is_active());
+    }
+
+    /// What few people need: how Roblox is run, and raw FastFlags and environment.
+    fn build_advanced(self: &Rc<Self>, s: &Settings) {
+        let page = &self.advanced;
+        let changed = self.on_change();
 
         let group = adw::PreferencesGroup::builder().title("Performance").build();
         page.add(&group);
         let gamemode = adw::SwitchRow::builder().title("GameMode").active(s.gamemode).build();
-        let mangohud = adw::SwitchRow::builder().title("MangoHud overlay").active(s.mangohud).build();
+        let mangohud = adw::SwitchRow::builder().title("MangoHud")
+            .active(s.mangohud).build();
         let cores = adw::EntryRow::builder().title("CPU cores (e.g. 1-5,7-11; empty = all)").text(&s.cpu_cores).build();
         let wrapper = adw::EntryRow::builder().title("Wrapper command (%command% = Roblox)").text(&s.wrapper).build();
         group.add(&gamemode);
@@ -170,45 +178,33 @@ impl GlobalSettings {
         });
         self.saver(move |t| t.wrapper = wrapper.text().trim().to_string());
 
-        let group = adw::PreferencesGroup::builder()
-            .title("In-game panel and loading window")
-            .description("The panel is drawn inside Roblox and opens with its key while the game has focus \
-                          (a key your desktop doesn't take for itself). `mace panel` opens it too, for a \
-                          desktop shortcut. Changes apply to games started afterwards.")
-            .build();
+        let group = adw::PreferencesGroup::builder().title("Rosemary").build();
         page.add(&group);
-        let panel = adw::SwitchRow::builder().title("In-game panel")
-            .subtitle("Your server, the server list and your alts, over the game").active(s.panel).build();
-        let key = adw::EntryRow::builder().title("Panel key (e.g. INSERT, SHIFT + F1)").text(&s.overlay_key).build();
-        let blur = adw::SwitchRow::builder().title("Blur the game behind the panel")
-            .subtitle("Off: the game is only dimmed").active(s.panel_blur).build();
-        let fps = adw::SwitchRow::builder().title("Show FPS")
-            .subtitle("Rosemary counts the frames; it costs a little speed").active(s.panel_fps).build();
-        let loading = adw::SwitchRow::builder().title("Loading window")
-            .subtitle("Shows progress while an account starts").active(s.loading_screen).build();
-        group.add(&panel);
-        group.add(&key);
-        group.add(&blur);
-        group.add(&fps);
-        group.add(&loading);
-        panel.connect_active_notify({ let c = changed.clone(); move |_| c() });
-        key.connect_changed({ let c = changed.clone(); move |_| c() });
-        blur.connect_active_notify({ let c = changed.clone(); move |_| c() });
-        fps.connect_active_notify({ let c = changed.clone(); move |_| c() });
-        loading.connect_active_notify({ let c = changed.clone(); move |_| c() });
-        self.saver(move |t| t.panel = panel.is_active());
-        self.saver(move |t| t.overlay_key = key.text().trim().to_string());
-        self.saver(move |t| t.panel_blur = blur.is_active());
-        self.saver(move |t| t.panel_fps = fps.is_active());
-        self.saver(move |t| t.loading_screen = loading.is_active());
-    }
+        let runners = runner::butter_runners();
+        let mut choices = vec![("auto".to_string(), "Newest".to_string())];
+        choices.extend(runners.iter().map(|r| (r.path.to_string_lossy().into_owned(), r.name.clone())));
+        if !choices.iter().any(|(v, _)| *v == s.rosemary) {
+            choices.push((s.rosemary.clone(), s.rosemary.clone()));
+        }
+        let runner = combo("Runner", &choices, &s.rosemary, if runners.is_empty() { "No Butter runners found" } else { "" });
+        let decorations = pairs(&[("server", "Your desktop's"), ("client", "Mac style")]);
+        let menus = pairs(&[("none", "Hidden"), ("strip", "Under the title bar"), ("titlebar", "In the title bar")]);
+        let deco = combo("Title bar", &decorations, &s.decorations, "");
+        let menu = combo("Mac menu bar", &menus, &s.menu, "");
+        group.add(&runner);
+        group.add(&deco);
+        group.add(&menu);
+        runner.connect_selected_notify({ let c = changed.clone(); move |_| c() });
+        deco.connect_selected_notify({ let c = changed.clone(); move |_| c() });
+        menu.connect_selected_notify({ let c = changed.clone(); move |_| c() });
+        self.saver(move |t| t.rosemary = chosen(&runner, &choices));
+        self.saver(move |t| t.decorations = chosen(&deco, &decorations));
+        self.saver(move |t| t.menu = chosen(&menu, &menus));
 
-    fn build_advanced(self: &Rc<Self>, s: &Settings) {
-        let changed = self.on_change();
         for (key, title, description) in [("fast_flags", "FastFlags", "One per line: Name=value"),
-                                          ("extra_env", "Extra environment variables", "One per line: NAME=value")] {
+                                          ("extra_env", "Environment variables", "One per line: NAME=value")] {
             let group = adw::PreferencesGroup::builder().title(title).description(description).build();
-            self.advanced.add(&group);
+            page.add(&group);
             let values = if key == "fast_flags" { &s.fast_flags } else { &s.extra_env };
             let (editor, buffer) = pairs_editor(values);
             group.add(&editor);

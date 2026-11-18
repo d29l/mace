@@ -13,31 +13,31 @@ use crate::accounts::{self, Account};
 use crate::servers;
 use crate::{builds, desktop, doctor, launch, migrate, processes, settings, supervisor};
 
-pub const HELP: &str = "mace: the macOS Roblox client on Linux, on several accounts at once.
+pub const HELP: &str = "mace: macOS Roblox on Linux, with multiple accounts.
 
-    mace                          the window
-    mace list [--json]            accounts, whether they run, their servers and builds
-    mace start ACCOUNT [LINK]     start an account; LINK can also be another account
+    mace                          open the window
+    mace list [--json]            accounts and what they're doing
+    mace start ACCOUNT [LINK]     start an account (LINK may be another account)
     mace stop ACCOUNT
-    mace open URL                 open a roblox.com link (on the account the browser is signed in as)
-    mace gather ACCOUNT           every other account joins ACCOUNT's server
-    mace rejoin ACCOUNT           join the server ACCOUNT is in again
-    mace link [ACCOUNT]           copy a join link (ACCOUNT's, the focused window's, the latest)
-    mace job [ACCOUNT]            copy the job ID instead
-    mace focus ACCOUNT            raise ACCOUNT's window
-    mace mute ACCOUNT [on|off]    mute or unmute ACCOUNT's sound (toggles without on/off)
-    mace update [ACCOUNT|--all]   download the Roblox build each account's channel wants
-    mace gc                       delete builds no account uses
-    mace why [ACCOUNT]            what happened at ACCOUNT's last start
-    mace migrate                  set up from Nutmeg (once)
-    mace integrate [--undo]       menu entries and roblox.com's Play button
+    mace open URL                 open a roblox.com link
+    mace gather ACCOUNT           bring every account to ACCOUNT's server
+    mace rejoin ACCOUNT           rejoin ACCOUNT's server
+    mace link [ACCOUNT]           copy the join link
+    mace job [ACCOUNT]            copy the job ID
+    mace focus ACCOUNT            focus ACCOUNT's window
+    mace mute ACCOUNT [on|off]    mute or unmute (toggles without on/off)
+    mace update [ACCOUNT|--all]   update Roblox
+    mace gc                       delete unused builds
+    mace why [ACCOUNT]            explain the last start
+    mace migrate                  import from Nutmeg
+    mace integrate [--undo]       menu entries and roblox.com links
     mace servers ACCOUNT [--fewest] [--json]
-                                  public servers of the game ACCOUNT is in, fullest first
-    mace panel [ACCOUNT]          open or close the in-game panel (for a desktop shortcut)
+                                  list the game's public servers
+    mace panel [ACCOUNT]          toggle the in-game panel
     mace --version
 
-ACCOUNT is an id (main, alt1, ...), a name given in Mace, a username or a display name.
-LINK is a join link, a game/share/roblox:// link, or \"PLACEID JOBID\".";
+ACCOUNT: an id (main, alt1, ...), name, username or display name.
+LINK: a join link, a game/share/roblox:// link, or \"PLACEID JOBID\".";
 
 /// A notification; with actions, it waits and returns the one clicked. The
 /// icon goes by its name in the icon theme (installed by `mace integrate`):
@@ -171,7 +171,7 @@ fn cmd_list(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
         let name = username(r);
         let ids: Vec<&str> = rows.iter().filter(|o| username(o) == name).filter_map(|o| o["id"].as_str()).collect();
         if !name.is_empty() && ids.len() > 1 && !seen.contains(&name) {
-            eprintln!("\nnote: {} are all signed in as @{name}; sign the wrong one(s) back in from their Roblox window",
+            eprintln!("\nnote: {} are all signed in as @{name}",
                       ids.join(", "));
             seen.push(name);
         }
@@ -191,7 +191,7 @@ fn cmd_start(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
     if dry {
         writeln!(out, "{}", argv.join(" "))?;
     } else if argv.iter().any(|a| a == "supervise") {
-        writeln!(out, "starting {} (progress: the loading window, `mace list`, or `mace why`)", account.name())?;
+        writeln!(out, "starting {}", account.name())?;
     }
     Ok(())
 }
@@ -203,7 +203,7 @@ fn cmd_open(args: &[String], _out: &mut dyn Write) -> anyhow::Result<()> {
     // whose login the link would replace).
     let account = accounts::browser_account()
         .or_else(|| accounts::accounts().into_iter().next())
-        .ok_or_else(|| anyhow!("there are no accounts yet: open Mace and add one"))?;
+        .ok_or_else(|| anyhow!("no accounts yet: add one in Mace"))?;
     if let Err(error) = launch::start(&account, Some(url), false, false) {
         // from a browser click: say it where it's seen
         notify("Couldn't start Roblox", &error.to_string(), &[], false);
@@ -247,7 +247,7 @@ fn copy_server(args: &[String], what: &str) -> anyhow::Result<()> {
         }),
     };
     let Some((account, server)) = account.and_then(|a| found.get(&a.id).cloned().map(|s| (a, s))) else {
-        bail!("not in a server: join a Roblox server first");
+        bail!("not in a server");
     };
     copy(str_of(&server, what), false);
     let described = servers::describe(&server);
@@ -307,10 +307,10 @@ fn cmd_update(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
     let config = settings::load();
     for account in targets {
         if !live.contains_key(&account.id) && builds::clear_updater_leftovers(&account) {
-            writeln!(out, "{}: cleared an unfinished update Roblox's updater left behind", account.name())?;
+            writeln!(out, "{}: cleared an unfinished Roblox update", account.name())?;
         }
         let Some(build) = builds::wanted(&account, None) else {
-            eprintln!("{}: can't reach Roblox to check its version", account.name());
+            eprintln!("{}: can't check for updates (offline?)", account.name());
             continue;
         };
         if builds::up_to_date(&account, &build) {
@@ -320,7 +320,7 @@ fn cmd_update(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
         let mut bar = progress_bar(format!("Roblox {}", build.version));
         if live.contains_key(&account.id) {
             builds::ensure(&build, &mut bar)?;
-            writeln!(out, "{}: Roblox {} downloaded; it is used at the next start", account.name(), build.version)?;
+            writeln!(out, "{}: Roblox {} downloaded, used at the next start", account.name(), build.version)?;
             continue;
         }
         let bundle = builds::provision(&account, &build, &mut bar)?;
@@ -346,7 +346,7 @@ fn cmd_migrate(_args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
     for line in migrate::run()? {
         writeln!(out, "{line}")?;
     }
-    writeln!(out, "downloading each account's Roblox build:")?;
+    writeln!(out, "updating:")?;
     cmd_update(&["--all".into()], out)
 }
 
@@ -362,8 +362,6 @@ fn cmd_integrate(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
     }
     Ok(())
 }
-
-/// Notify each join, on every account, with a button to copy its link.
 
 
 fn cmd_servers(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {

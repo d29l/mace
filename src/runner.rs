@@ -70,7 +70,7 @@ pub fn find(choice: &str) -> anyhow::Result<PathBuf> {
         if fsutil::is_executable(&path) {
             return Ok(path);
         }
-        bail!("the Rosemary chosen in Mace's settings is missing: {}", path.display());
+        bail!("the chosen Rosemary is missing: {}", path.display());
     }
     if let Some(runner) = butter_runners().into_iter().next() {
         return Ok(runner.path);
@@ -78,5 +78,5 @@ pub fn find(choice: &str) -> anyhow::Result<PathBuf> {
     if let Some(path) = fsutil::which("rosemary") {
         return Ok(path);
     }
-    bail!("no Rosemary found: install one in Butter (Runners), or choose one in Mace's settings")
+    bail!("no Rosemary found: install a runner in Butter")
 }

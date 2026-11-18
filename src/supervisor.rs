@@ -52,6 +52,26 @@ pub fn read_status(account_id: &str) -> Map<String, Value> {
     }
 }
 
+/// Stop a start that's under way (the loading window's Cancel): its
+/// supervisor, then whatever Roblox it had begun.
+pub fn cancel(account_id: &str) {
+    if let Some(pid) = read_status(account_id).get("pid").and_then(Value::as_i64) {
+        // only the supervisor of this account, should the pid have been reused since
+        let ours = std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|raw| {
+            let args: Vec<&[u8]> = raw.split(|b| *b == 0).collect();
+            args.contains(&&b"supervise"[..]) && args.contains(&account_id.as_bytes())
+        });
+        if ours {
+            // SAFETY: a plain signal to our own supervisor, checked above.
+            unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        }
+    }
+    if let Ok(account) = accounts::get(account_id) {
+        processes::stop(&account, &accounts::accounts(), Duration::from_secs(1));
+    }
+    let _ = std::fs::remove_file(status_dir().join(format!("{account_id}.json")));
+}
+
 pub fn read_fps(account_id: &str) -> Option<u64> {
     let data = fsutil::read_json(&stats_dir().join(format!("{account_id}.json")))?;
     let time = data.get("time").and_then(Value::as_f64).unwrap_or(0.0);
@@ -115,6 +135,7 @@ impl Reporter {
         let report = self.clone();
         move |done, total| {
             let share = (total > 0).then(|| done as f64 / total as f64);
+            report.update(&[("size", json!([done, total]))]);
             report.set("downloading", &format!("Downloading Roblox {version}"), share);
         }
     }
@@ -162,14 +183,9 @@ fn learn_browser_user(account: Account, since: f64) {
                     if !mine.is_empty() && user != mine {
                         let other = accounts::accounts().into_iter().find(|a| a.identity().id == user);
                         let browser = other.as_ref().map_or_else(|| format!("user {user}"), Account::name);
-                        let next = match &other {
-                            Some(other) => format!("{}'s Roblox from now on.", other.name()),
-                            None => "the first account from now on.".into(),
-                        };
-                        notify(&account.id, &format!("{} is signed in as another account now", account.name()),
-                               &format!("roblox.com links sign Roblox in as the browser's account ({browser}), so \
-                                         {name}'s Roblox now is that account. Sign {name} back in from its Roblox \
-                                         window. Links open in {next}", name = account.name()), true);
+                        notify(&account.id, &format!("{} signed in as {browser}", account.name()),
+                               "roblox.com links use the browser's account. Sign back in from the Roblox window.",
+                               true);
                     }
                     return;
                 }
@@ -214,8 +230,8 @@ pub fn pump(stream: impl std::io::Read, log_path: &Path, account_id: &str) {
             blind = true;
             let _ = std::fs::create_dir_all(paths::runtime());
             let _ = std::fs::write(blind_marker(account_id), b"");
-            let _ = log.write_all(b"mace: this Roblox can't be handed links (Rosemary's process server was shutting \
-                                   down when it started); joins will restart it instead\n");
+            let _ = log.write_all(b"mace: this Roblox can't take links (started while Rosemary's process server \
+                                   was shutting down); joins will restart it\n");
         }
         match line.windows(marker.len()).position(|w| w == marker) {
             Some(at) => {
@@ -272,7 +288,7 @@ fn watch_session(account: &Account, child: &mut std::process::Child) -> anyhow::
     while child.try_wait()?.is_none() {
         if processes::stop_updaters(account) {
             builds::clear_updater_leftovers(account);
-            note(account, "Roblox started its updater during the game; stopped it (Mace installs versions)");
+            note(account, "stopped Roblox's updater (Mace installs versions itself)");
         }
         std::thread::sleep(SESSION_POLL);
     }
@@ -298,16 +314,12 @@ pub fn note_for(account_id: &str, text: &str) {
 /// Run the client once.
 fn run_client(account: &Account, bundle: &Path, url: Option<&str>, config: &Settings, report: &Reporter)
               -> anyhow::Result<Outcome> {
-    let s = config.for_account(&account.id);
-    let (argv, mut env) = launch::command(account, bundle, url, config)?;
-    if s.panel_fps {
-        env.insert("ROSEMARY_METAL_STATS".into(), "1".into());
-    }
+    let (argv, env) = launch::command(account, bundle, url, config)?;
     std::fs::create_dir_all(paths::logs())?;
     // a client started next to an earlier one's leftovers can't be handed links later
     let cleared = processes::clear_leftovers(account, &crate::accounts::accounts());
     if cleared > 0 {
-        note(account, &format!("stopped {cleared} process(es) an earlier Roblox left in this prefix"));
+        note(account, &format!("stopped {cleared} leftover process(es)"));
     }
     let _ = std::fs::remove_file(blind_marker(&account.id));
     let started = unix_time();
@@ -330,7 +342,7 @@ fn run_client(account: &Account, bundle: &Path, url: Option<&str>, config: &Sett
         if processes::stop_updaters(account) {
             if !updated {
                 updated = true;
-                report.set("updating", "Roblox wants another version for this account", None);
+                report.set("updating", "Updating Roblox", None);
             }
         } else if !updated {
             shown = window_up(&processes::prefix_pids(&account.prefix, false, None), clock.elapsed());
@@ -400,7 +412,7 @@ pub fn run(account_id: &str, url: Option<&str>) -> i32 {
     let mut build: Option<Build> = None;
     let mut retried = false;
     for attempt in 1..=ATTEMPTS {
-        report.set("preparing", "Checking which Roblox this account needs", None);
+        report.set("preparing", "Checking for updates", None);
         if build.is_none() {
             build = builds::wanted(&account, url);
         }
@@ -427,19 +439,19 @@ pub fn run(account_id: &str, url: Option<&str>) -> i32 {
         match asked {
             // the version the client was just told to run
             Some(asked) if build.as_ref().is_none_or(|b| b.guid != asked.guid) => {
-                report.set("updating", &format!("Installing Roblox {}, then opening the game again", asked.version), None);
+                report.set("updating", &format!("Installing Roblox {}", asked.version), None);
                 build = Some(asked);
             }
             // the same version: the updater was finishing an old update, or
             // the client fell over; start once more on a checked copy
             _ if !retried => {
                 retried = true;
-                report.set("preparing", "Roblox didn't open; starting it again", None);
+                report.set("preparing", "Retrying", None);
             }
             _ => break,
         }
     }
-    fail("Roblox keeps closing before its window opens; see `mace why`")
+    fail("Roblox closed before its window opened")
 }
 
 #[cfg(test)]
@@ -497,7 +509,7 @@ exit 0
         std::fs::create_dir_all(&state).unwrap();
         let runner = home.fake_runner(FAKE_RUNNER);
         let s = Settings::from_stored(&json!({"rosemary": runner, "gamemode": false, "cpu_cores": "",
-                                              "loading_screen": false, "panel_fps": true}));
+                                              "loading_screen": false}));
         settings::save(&s).unwrap();
         let prefix = home.make_prefix("main", Some(json!({})));
         let account = accounts::register(Account::new("main", &prefix, "", false)).unwrap();
@@ -569,7 +581,7 @@ exit 0
         std::fs::create_dir_all(&state).unwrap();
         let runner = home.fake_runner(script);
         let s = Settings::from_stored(&json!({"rosemary": runner, "gamemode": false, "cpu_cores": "",
-                                              "loading_screen": false, "panel_fps": false}));
+                                              "loading_screen": false}));
         settings::save(&s).unwrap();
         let build = Build::new("version-00000000000000a1", "0.1.0.1", "production");
         let storage = json!({"UpdateControllerCacheChannel": "",
@@ -649,7 +661,7 @@ exit 0
         assert_eq!(calls.len(), 2); // tried once more first
         let status = read_status("main");
         assert_eq!(status["state"], "failed"); // the loading window says so
-        assert!(status["message"].as_str().unwrap().contains("mace why"));
+        assert!(status["message"].as_str().unwrap().contains("closed before its window"));
     }
 
     /// The server moved the account to another channel mid-game, and the client
@@ -680,7 +692,7 @@ exit 0
         assert!(!lib.join("UnzippedBundle").exists());
         assert!(!lib.join("RobloxPlayerInstaller/InstallerInfo.log").exists());
         let log = std::fs::read_to_string(paths::logs().join("main.log")).unwrap();
-        assert!(log.contains("updater during the game"));
+        assert!(log.contains("stopped Roblox's updater"));
     }
 }
 

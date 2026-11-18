@@ -49,8 +49,7 @@ pub fn diagnose(account: &Account, live: bool) -> Vec<String> {
     let mut found = Vec::new();
     let launch_log = paths::logs().join(format!("{}.log", account.id));
     let Some(log) = servers::newest_player_log(&account.logs()) else {
-        return vec![format!("Roblox hasn't written a log for this account yet: it has never started, or it failed \
-                             before Roblox itself ran. See Mace's log: {}", launch_log.display())];
+        return vec![format!("Roblox hasn't written a log for this account yet. Mace's log: {}", launch_log.display())];
     };
     let text = read_tail(&log, 4 << 20);
     let have = builds::bundle_version(&account.bundle());
@@ -58,8 +57,7 @@ pub fn diagnose(account: &Account, live: bool) -> Vec<String> {
 
     if text.contains(FORCED) && text.contains(UPDATER_STARTED) {
         let wanted = WANTED.captures(&text).map_or("another version".to_string(), |m| m[1].to_string());
-        found.push(format!("Roblox {version} was told to run {wanted} for this account's channel, so it started its own \
-                            updater (the installer window) and quit."));
+        found.push(format!("Roblox {version} was told to update to {wanted}, so it ran its own updater and quit."));
         let since = modified(&log) - std::time::Duration::from_secs(5);
         if let Some(installer) = installer_logs(account).into_iter().filter(|p| modified(p) >= since).last() {
             let itext = read_tail(&installer, 4 << 20);
@@ -72,40 +70,37 @@ pub fn diagnose(account: &Account, live: bool) -> Vec<String> {
                     (None, Some(f)) => f[1].to_string(),
                     _ => unreachable!(),
                 };
-                found.push(format!("The updater installed the new version, then crashed before reopening Roblox \
-                                    ({what}, a Rosemary bug). Starting the account again works."));
+                found.push(format!("The updater installed the new version, then crashed ({what}). Start the account again."));
             } else if moved {
                 found.push("The updater installed the new version.".into());
             } else if itext.contains(QUIT) {
-                found.push("The updater was closed before it installed anything, so the old version stayed.".into());
+                found.push("The updater was closed early; the old version stayed.".into());
             } else if selector.is_some() || fault.is_some() {
                 found.push("The updater crashed before it installed anything.".into());
             }
         }
-        found.push("Mace downloads the right version itself before each start, so this only happens when Roblox \
-                    moves an account to another channel between two starts."
+        found.push("Mace installs the right version before each start; this happens when Roblox moves the account \
+                    to another channel."
             .into());
     } else if text.contains(FINISHING) {
-        found.push(format!("Roblox {version} found an update that an earlier updater left unfinished, handed over to \
-                            the updater to finish it, and quit."));
+        found.push(format!("Roblox {version} found an update an earlier updater left unfinished, and quit to finish it."));
         let since = modified(&log) - std::time::Duration::from_secs(5);
         let moved = installer_logs(account).into_iter().filter(|p| modified(p) >= since)
             .any(|p| MOVED.is_match(&read_tail(&p, 4 << 20)));
         if moved {
-            found.push("The updater put the old version it had unpacked back then over this account's copy.".into());
+            found.push("The updater put an old version over this account's copy.".into());
         }
-        found.push("Mace clears those leftovers and checks the copy before each start, and starts Roblox again when \
-                    this happens anyway; `mace update` does the same without starting it."
+        found.push("Mace clears this before each start and retries; `mace update` fixes it too."
             .into());
     } else if let Some(m) = JOINED.captures(&text) {
         found.push(format!("Roblox {version} started and joined place {}.{}", &m[1],
-                           if live { " It is still running." } else { "" }));
+                           if live { " Still running." } else { "" }));
     } else if live {
         found.push(format!("Roblox {version} is running and hasn't joined a game yet."));
     } else if text.contains(SHUTDOWN) {
         found.push(format!("Roblox {version} started and quit without joining a game."));
     } else {
-        found.push(format!("Roblox {version} stopped without saying why in its log (a crash, or it was killed)."));
+        found.push(format!("Roblox {version} stopped without logging why (a crash, or killed)."));
     }
 
     let tail = read_tail(&launch_log, 8000);
@@ -126,10 +121,10 @@ pub fn diagnose(account: &Account, live: bool) -> Vec<String> {
 fn panel(launch_log: &str) -> Option<String> {
     let last = |prefix: &str| launch_log.lines().rev().find_map(|l| l.strip_prefix(prefix).map(str::to_string));
     if let Some(why) = last("mace: no in-game panel: ") {
-        return Some(format!("There was no in-game panel: {why}."));
+        return Some(format!("No in-game panel: {why}."));
     }
     last("mace-panel: the panel is off for this session: ")
-        .map(|why| format!("The in-game panel turned itself off ({why}); the game carried on without it."))
+        .map(|why| format!("The in-game panel turned itself off ({why})."))
 }
 
 #[cfg(test)]
@@ -194,7 +189,7 @@ mod tests {
     #[test]
     fn the_panel_says_why_it_isnt_there() {
         assert_eq!(panel("mace: started\nmace: no in-game panel: the panel's library isn't installed\n").as_deref(),
-                   Some("There was no in-game panel: the panel's library isn't installed."));
+                   Some("No in-game panel: the panel's library isn't installed."));
         assert!(panel("mace-panel: the panel is off for this session: drawing failed: ERROR_DEVICE_LOST\n").unwrap()
             .contains("turned itself off (drawing failed"));
         assert_eq!(panel("mace: the in-game panel is ready (Roblox pid 4, wayland)\n"), None);

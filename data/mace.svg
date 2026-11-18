@@ -1,10 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Mace's mark: a tilted square with a square hole, faceted like the head of a
+       mace into four faces lit from the top left. -->
   <defs>
-    <clipPath id="shape"><rect x="76" y="76" width="360" height="360" rx="76"/></clipPath>
-    <mask id="cuts"><rect x="-200" y="-200" width="912" height="912" fill="white"/>
-      <rect x="214.0" y="214.0" width="84" height="84" rx="12" fill="black"/>
-      <g fill="none" stroke="black" stroke-width="18" stroke-linecap="round"><path d="M 214.0 214.0 C 208.0 96, 216 86, 326 46"/><path d="M 298.0 214.0 C 416 208.0, 426 216, 466 326"/><path d="M 298.0 298.0 C 304.0 416, 296 426, 186 466"/><path d="M 214.0 298.0 C 96 304.0, 86 296, 46 186"/></g>
+    <mask id="hole">
+      <rect x="0" y="0" width="512" height="512" fill="white"/>
+      <rect x="200" y="200" width="112" height="112" rx="16" fill="black"/>
     </mask>
+    <clipPath id="shape"><rect x="76" y="76" width="360" height="360" rx="84"/></clipPath>
   </defs>
-  <g transform="rotate(15 256 256)"><g clip-path="url(#shape)"><g mask="url(#cuts)"><path d="M 214.0 214.0 C 208.0 96, 216 86, 326 46 L 496 16 L 466 326 C 426 216, 416 208.0, 298.0 214.0 Z" fill="#d93a2b"/><path d="M 298.0 214.0 C 416 208.0, 426 216, 466 326 L 496 496 L 186 466 C 296 426, 304.0 416, 298.0 298.0 Z" fill="#7a1a12"/><path d="M 298.0 298.0 C 304.0 416, 296 426, 186 466 L 16 496 L 46 186 C 86 296, 96 304.0, 214.0 298.0 Z" fill="#d93a2b"/><path d="M 214.0 298.0 C 96 304.0, 86 296, 46 186 L 16 16 L 326 46 C 216 86, 208.0 96, 214.0 214.0 Z" fill="#7a1a12"/></g></g></g>
+  <g transform="rotate(15 256 256)">
+    <g clip-path="url(#shape)" mask="url(#hole)">
+      <polygon points="76,76 436,76 256,256" fill="#ef5a49"/>
+      <polygon points="436,76 436,436 256,256" fill="#c4342a"/>
+      <polygon points="436,436 76,436 256,256" fill="#8e2219"/>
+      <polygon points="76,436 76,76 256,256" fill="#d8402f"/>
+    </g>
+  </g>
 </svg>

@@ -83,8 +83,6 @@ pub struct Settings {
     pub panel: bool,
     /// Blur the game behind the open panel; otherwise it's only dimmed.
     pub panel_blur: bool,
-    /// Rosemary reports frames per second, shown in the panel.
-    pub panel_fps: bool,
     /// The in-game panel's key, e.g. "INSERT" or "SHIFT + F1" (the game has to receive it).
     pub overlay_key: String,
     /// Account id -> its own values.
@@ -111,7 +109,6 @@ impl Default for Settings {
             loading_screen: true,
             panel: true,
             panel_blur: false,
-            panel_fps: true,
             overlay_key: "INSERT".into(),
             accounts: Map::new(),
         }
@@ -135,7 +132,6 @@ pub struct Effective {
     pub wrapper: String,
     pub fast_flags: Map<String, Value>,
     pub extra_env: Map<String, Value>,
-    pub panel_fps: bool,
 }
 
 fn as_u64(value: Option<&Value>, default: u64) -> u64 {
@@ -269,7 +265,6 @@ impl Settings {
             loading_screen: truthy(get("loading_screen"), d.loading_screen),
             panel: truthy(get("panel"), d.panel),
             panel_blur: truthy(get("panel_blur"), d.panel_blur),
-            panel_fps: truthy(get("panel_fps"), d.panel_fps),
             overlay_key: text(get("overlay_key")).trim().to_string(),
             accounts,
         }
@@ -322,7 +317,6 @@ impl Settings {
             wrapper: self.wrapper.clone(),
             fast_flags,
             extra_env,
-            panel_fps: self.panel_fps,
         }
     }
 }

@@ -140,13 +140,13 @@ pub fn preflight(runner: &Path) -> Result<PathBuf, String> {
     let (needed, wants) = elf_needs(&data)?;
     const SYSTEM: [&str; 6] = ["libc.so.6", "libm.so.6", "libgcc_s.so.1", "ld-linux-x86-64.so.2", "libdl.so.2", "libpthread.so.0"];
     if let Some(other) = needed.iter().find(|n| !SYSTEM.contains(&n.as_str())) {
-        return Err(format!("the panel's library needs {other}, which Roblox's process may not have"));
+        return Err(format!("the panel library needs {other}"));
     }
-    for (whose, has) in [("this system's", host_glibc()), ("Rosemary's", rosemary_glibc(runner))] {
+    for (whose, has) in [("the system", host_glibc()), ("Rosemary", rosemary_glibc(runner))] {
         if let Some(has) = has
             && wants > has
         {
-            return Err(format!("the panel was built for glibc {}.{}, newer than {whose} {}.{}; rebuild Mace",
+            return Err(format!("the panel needs glibc {}.{}, {whose} has {}.{}; rebuild Mace",
                                wants.0, wants.1, has.0, has.1));
         }
     }
@@ -378,7 +378,7 @@ const ALLOWED: [&str; 6] = ["start", "stop", "mute", "rejoin", "gather", "focus"
 fn run(args: &[String]) -> (bool, String) {
     let Some(name) = args.first() else { return (false, "no command".into()) };
     if !ALLOWED.contains(&name.as_str()) {
-        return (false, format!("not something the panel can do: {name}"));
+        return (false, format!("not allowed from the panel: {name}"));
     }
     let mut args = args[1..].to_vec();
     if name == "start" {
@@ -474,9 +474,9 @@ fn modified(path: &Path) -> Option<SystemTime> {
 /// "Joined Flex Your FPS" / "Server in Frankfurt am Main, Hesse, DE".
 fn join_toast(server: &Map<String, Value>) -> ToPanel {
     let info = servers::describe(server);
-    let title = info.get("name").and_then(Value::as_str).map_or_else(|| "Joined a server".into(), |n| format!("Joined {n}"));
+    let title = info.get("name").and_then(Value::as_str).map_or_else(|| "Joined server".into(), |n| format!("Joined {n}"));
     let body = info.get("location").and_then(Value::as_str)
-        .map_or_else(|| "Server location unknown".into(), |p| format!("Server in {p}"));
+        .map(String::from).unwrap_or_default();
     ToPanel::Toast { title, body }
 }
 
@@ -604,7 +604,7 @@ fn connection(stream: UnixStream, shared: Arc<Shared>) {
         match message {
             ToMace::Hello { pid, video, .. } => {
                 shared.panels.lock().unwrap().push(writer.clone());
-                supervisor::note_for(&me, &format!("the in-game panel is ready (Roblox pid {pid}, {video})"));
+                supervisor::note_for(&me, &format!("panel ready (pid {pid}, {video})"));
                 if let Some(start) = send_config.take() {
                     start();
                 }
@@ -722,7 +722,7 @@ mod tests {
         }
         assert!(seen.iter().any(|m| matches!(m, ToPanel::Config(c) if c.me == "main" && c.key.scancode == 73)));
         assert!(seen.iter().any(|m| matches!(m, ToPanel::State(_))));
-        assert!(seen.iter().any(|m| matches!(m, ToPanel::Done { id: 4, ok: false, error } if error.contains("not something"))));
+        assert!(seen.iter().any(|m| matches!(m, ToPanel::Done { id: 4, ok: false, error } if error.contains("not allowed"))));
         // another process's toast reaches the panel
         assert!(toast("main", "Join link copied", "Anyone with it can join"));
         let toasted = lines.map_while(Result::ok).filter_map(|l| serde_json::from_str::<ToPanel>(&l).ok())
@@ -757,7 +757,7 @@ mod tests {
             .filter_map(|l| serde_json::from_str::<ToPanel>(&l).ok())
             .filter(|m| matches!(m, ToPanel::Toast { .. })).take(2).collect();
         assert_eq!(toasts, vec![
-            ToPanel::Toast { title: "Joined Obby".into(), body: "Server in Paris, FR".into() },
+            ToPanel::Toast { title: "Joined Obby".into(), body: "Paris, FR".into() },
             ToPanel::Toast { title: "Second joined your server".into(), body: String::new() },
         ]);
     }

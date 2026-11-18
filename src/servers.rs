@@ -159,7 +159,7 @@ static PAUSED_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
 pub fn public_page(place: &str, sort: Sort, cursor: Option<&str>) -> ServerPage {
     let mut page = ServerPage { place: place.into(), sort, cursor: cursor.map(String::from), ..Default::default() };
     if place.is_empty() || !place.bytes().all(|b| b.is_ascii_digit()) {
-        page.error = "No game to list servers for".into();
+        page.error = "No game".into();
         return page;
     }
     if std::env::var_os("MACE_OFFLINE").is_some() {
@@ -172,7 +172,7 @@ pub fn public_page(place: &str, sort: Sort, cursor: Option<&str>) -> ServerPage 
     {
         return cached.clone();
     }
-    let pause = "Roblox asked for a break; try again in a few seconds";
+    let pause = "Rate limited; try again shortly";
     if PAUSED_UNTIL.lock().unwrap().is_some_and(|until| Instant::now() < until) {
         page.error = pause.into();
         return page;
@@ -190,7 +190,7 @@ pub fn public_page(place: &str, sort: Sort, cursor: Option<&str>) -> ServerPage 
                 fill_page(&data, &mut page);
                 PAGES.lock().unwrap().insert(key, (Instant::now(), page.clone()));
             }
-            Err(_) => page.error = "Roblox's answer didn't make sense".into(),
+            Err(_) => page.error = "Bad response from Roblox".into(),
         },
         Err(ureq::Error::StatusCode(429)) => {
             *PAUSED_UNTIL.lock().unwrap() = Some(Instant::now() + SLOW_DOWN);
@@ -403,6 +403,6 @@ pub(crate) mod tests {
         assert_eq!((page.list[0].playing, page.list[0].max, page.list[0].ping), (34, 35, Some(315)));
         assert_eq!(page.list[0].location.as_deref(), Some("Paris, FR"));
         assert_eq!((page.list[1].ping, page.list[1].location.as_deref()), (None, None));
-        assert!(public_page("1; rm", Sort::Most, None).error.contains("No game"));
+        assert_eq!(public_page("1; rm", Sort::Most, None).error, "No game");
     }
 }

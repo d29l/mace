@@ -55,13 +55,12 @@ impl Window {
             .build();
         let group = adw::PreferencesGroup::builder()
             .title("Accounts")
-            .description("Every account has its own prefix and its own Roblox, on the version its channel wants.")
             .header_suffix(&add)
             .build();
         let empty_add = gtk::Button::builder().label("Add an account").halign(gtk::Align::Center)
             .css_classes(["pill", "suggested-action"]).build();
         let empty = adw::StatusPage::builder().icon_name(APP_ID).title("No accounts yet")
-            .description("Add one and sign in to it in the Roblox window that opens.").child(&empty_add).build();
+            .description("Add one, then sign in to Roblox.").child(&empty_add).build();
         let page = adw::PreferencesPage::new();
         page.add(&group);
         let stack = gtk::Stack::new();
@@ -174,9 +173,9 @@ impl Window {
     }
 
     fn ask_add(self: &Rc<Self>) {
-        let entry = gtk::Entry::builder().placeholder_text("Optional name, e.g. Alt").activates_default(true).build();
+        let entry = gtk::Entry::builder().placeholder_text("Name (optional)").activates_default(true).build();
         let dialog = adw::AlertDialog::new(Some("Add an account"),
-            Some("A new prefix is made for it, and Roblox opens so you can sign in. The login stays in that prefix."));
+            Some("Roblox opens so you can sign in."));
         dialog.set_extra_child(Some(&entry));
         dialog.add_responses(&[("cancel", "Cancel"), ("add", "Add and sign in")]);
         dialog.set_response_appearance("add", adw::ResponseAppearance::Suggested);
@@ -188,7 +187,7 @@ impl Window {
             if answer != "add" {
                 return;
             }
-            me.toast("Making a prefix…");
+            me.toast("Setting up…");
             let label = entry.text().to_string();
             let weak = Rc::downgrade(&me);
             background(move || accounts::add(&label).map_err(|e| e.to_string()), move |result| {
@@ -196,7 +195,7 @@ impl Window {
                 match result {
                     Ok(account) => {
                         me.reload();
-                        me.toast(&format!("Sign in to {} in the Roblox window that opens", account.name()));
+                        me.toast(&format!("Sign in to {} in Roblox", account.name()));
                         if let Some(row) = me.rows.borrow().iter().find(|r| r.account.id == account.id) {
                             row.run_start(None);
                         }
@@ -310,7 +309,7 @@ impl AccountRow {
         self.avatar.set_text(Some(&name));
         let mut bits: Vec<String> = Vec::new();
         match (&twin, who.username.is_empty()) {
-            (Some(other), false) => bits.push(format!("signed in as @{}, like {other}: sign in again from its Roblox window", who.username)),
+            (Some(other), false) => bits.push(format!("signed in as @{}, same as {other}", who.username)),
             (None, false) => bits.push(format!("@{}", who.username)),
             (_, true) if self.account.prefix.exists() => bits.push("not signed in".into()),
             _ => {}
@@ -396,7 +395,7 @@ impl AccountRow {
                 }
             });
         } else {
-            window.toast(&if self.who.borrow().is_empty() { format!("Starting {name}: sign in in the Roblox window that opens") }
+            window.toast(&if self.who.borrow().is_empty() { format!("Starting {name}: sign in to Roblox") }
                           else { format!("Starting {name}…") });
             self.run_start(None);
         }
@@ -454,7 +453,7 @@ impl AccountRow {
         let rows = window.rows.borrow();
         if self.server.borrow().contains_key("ip") && rows.len() > 1 {
             let weak = Rc::downgrade(self);
-            Self::item(container, "Bring everyone here", "Every other account joins this server", false, move || {
+            Self::item(container, "Bring everyone here", "All your accounts", false, move || {
                 if let Some(me) = weak.upgrade() {
                     me.gather();
                 }
@@ -554,9 +553,9 @@ impl AccountRow {
 
     fn ask_link(self: &Rc<Self>) {
         let Some(window) = self.window() else { return };
-        let entry = gtk::Entry::builder().placeholder_text("Join link, roblox:// link, or PLACEID JOBID").activates_default(true).build();
+        let entry = gtk::Entry::builder().placeholder_text("Link, or PLACEID JOBID").activates_default(true).build();
         let dialog = adw::AlertDialog::new(Some(&format!("Join with {}", self.name())),
-                                           Some("Paste a join link, a game or share link, or a place and job ID."));
+                                           None);
         dialog.set_extra_child(Some(&entry));
         dialog.add_responses(&[("cancel", "Cancel"), ("join", "Join")]);
         dialog.set_response_appearance("join", adw::ResponseAppearance::Suggested);
@@ -586,7 +585,7 @@ impl AccountRow {
         let who = self.who.borrow().clone();
         let entry = gtk::Entry::builder().text(&self.account.label).activates_default(true)
             .placeholder_text(if who.display.is_empty() { "Name" } else { &who.display }).build();
-        let dialog = adw::AlertDialog::new(Some("Rename account"), Some("Leave empty to use the Roblox display name."));
+        let dialog = adw::AlertDialog::new(Some("Rename account"), Some("Empty uses the Roblox display name."));
         dialog.set_extra_child(Some(&entry));
         dialog.add_responses(&[("cancel", "Cancel"), ("save", "Save")]);
         dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
@@ -608,9 +607,9 @@ impl AccountRow {
         let Some(window) = self.window() else { return };
         let name = self.name();
         let body = if self.account.owned {
-            "Its prefix is deleted, which signs it out and drops its settings and logs. The Roblox account itself is not touched.".to_string()
+            "Deletes its prefix, login, settings and logs. The Roblox account isn't affected.".to_string()
         } else {
-            format!("Mace forgets it and deletes its copy of Roblox. Its prefix ({}) wasn't made by Mace and is kept, login and all.",
+            format!("Removes it from Mace. Its prefix ({}) wasn't made by Mace and is kept.",
                     self.account.prefix.display())
         };
         let dialog = adw::AlertDialog::new(Some(&format!("Remove {name}?")), Some(&body));

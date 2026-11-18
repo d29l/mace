@@ -43,8 +43,8 @@ pub fn spin(title: &str, value: u64, upper: f64, subtitle: &str) -> adw::SpinRow
     row
 }
 
-pub const PRESENTATION_CHOICES: [(&str, &str); 5] = [("", "Rosemary's default"), ("immediate", "Immediate (lowest latency)"),
-    ("mailbox", "Mailbox"), ("fifo", "FIFO (VSync)"), ("fifo_relaxed", "FIFO relaxed")];
+pub const PRESENTATION_CHOICES: [(&str, &str); 5] = [("", "Default"), ("immediate", "Immediate"),
+    ("mailbox", "Mailbox"), ("fifo", "VSync (FIFO)"), ("fifo_relaxed", "FIFO relaxed")];
 
 /// A multi-line NAME=value editor.
 pub fn pairs_editor(values: &Map<String, Value>) -> (gtk::Frame, gtk::TextBuffer) {
