@@ -83,7 +83,8 @@ pub fn setup(ctx: &egui::Context) {
         style.spacing.item_spacing = vec2(8.0, 8.0);
         style.spacing.scroll.bar_width = 4.0;
         style.spacing.scroll.floating = true;
-        style.interaction.tooltip_delay = 0.5;
+        // tooltips come up quickly: the buttons are icons, and they say what each does
+        style.interaction.tooltip_delay = 0.15;
     });
 }
 
@@ -159,14 +160,17 @@ impl Colors {
     }
 }
 
-/// Icons from GNOME's Adwaita theme, the ones Mace Settings shows
-/// (`dev/icons.sh` makes them; layer/icons/README.md says whose they are).
+/// Material Symbols, rounded and filled, at the weight of the text (Noto Sans):
+/// `dev/icons.sh` makes them, and layer/icons/README.md says whose they are.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Icon {
     Refresh,
-    Copy,
+    Link,
     Servers,
+    /// A controller with a history clock: recent games.
     Games,
+    /// A controller: a game without its own picture.
+    Game,
     Alts,
     Settings,
     Close,
@@ -181,16 +185,17 @@ const ICON_SIZES: [u32; 6] = [16, 20, 24, 32, 40, 48];
 impl Icon {
     fn coverage(self) -> &'static [u8] {
         match self {
-            Icon::Refresh => include_bytes!("../icons/view-refresh.a8"),
-            Icon::Copy => include_bytes!("../icons/edit-copy.a8"),
-            Icon::Servers => include_bytes!("../icons/network-server.a8"),
-            Icon::Games => include_bytes!("../icons/input-gaming.a8"),
-            Icon::Alts => include_bytes!("../icons/system-users.a8"),
-            Icon::Settings => include_bytes!("../icons/emblem-system.a8"),
-            Icon::Close => include_bytes!("../icons/window-close.a8"),
-            Icon::Focus => include_bytes!("../icons/focus-windows.a8"),
-            Icon::Volume => include_bytes!("../icons/audio-volume-high.a8"),
-            Icon::Muted => include_bytes!("../icons/audio-volume-muted.a8"),
+            Icon::Refresh => include_bytes!("../icons/refresh.a8"),
+            Icon::Link => include_bytes!("../icons/link.a8"),
+            Icon::Servers => include_bytes!("../icons/storage.a8"),
+            Icon::Games => include_bytes!("../icons/games-recent.a8"),
+            Icon::Game => include_bytes!("../icons/sports_esports.a8"),
+            Icon::Alts => include_bytes!("../icons/group.a8"),
+            Icon::Settings => include_bytes!("../icons/settings.a8"),
+            Icon::Close => include_bytes!("../icons/close.a8"),
+            Icon::Focus => include_bytes!("../icons/select_window.a8"),
+            Icon::Volume => include_bytes!("../icons/volume_up.a8"),
+            Icon::Muted => include_bytes!("../icons/volume_off.a8"),
         }
     }
 
@@ -239,13 +244,13 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                   color);
 }
 
-/// A round icon button (32 points, a 16-point icon) for rows and headers.
+/// A round icon button (32 points, a 20-point icon) for rows and headers.
 fn icon_button(ui: &mut EUi, c: Colors, icon: Icon, tip: &str, tint: Option<Color32>) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
     if response.hovered() {
         ui.painter().circle_filled(rect.center(), 16.0, c.hover);
     }
-    paint_icon(ui.painter(), Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), icon, tint.unwrap_or(c.text));
+    paint_icon(ui.painter(), Rect::from_center_size(rect.center(), vec2(20.0, 20.0)), icon, tint.unwrap_or(c.text));
     response.on_hover_text(tip)
 }
 
@@ -261,7 +266,7 @@ struct BarButton {
     badge: Option<usize>,
 }
 
-/// A bar button: a 20-point icon in a round 40-point target, flat until
+/// A bar button: a 24-point icon in a round 40-point target, flat until
 /// hovered and filled while its drop-down is open.
 fn bar_button(ui: &mut EUi, c: Colors, rect: Rect, b: &BarButton) -> Response {
     let BarButton { salt, icon, selected, enabled, badge, .. } = *b;
@@ -280,7 +285,7 @@ fn bar_button(ui: &mut EUi, c: Colors, rect: Rect, b: &BarButton) -> Response {
         painter.circle_filled(rect.center(), rect.width() / 2.0, fill);
     }
     let ink = if enabled { c.text } else { c.subtext.gamma_multiply(0.45) };
-    paint_icon(painter, Rect::from_center_size(rect.center(), vec2(20.0, 20.0)), icon, ink);
+    paint_icon(painter, Rect::from_center_size(rect.center(), vec2(24.0, 24.0)), icon, ink);
     if let Some(n) = badge.filter(|n| *n > 0) {
         let digits = painter.layout_no_wrap(n.to_string(), bold(10.5), c.on_accent);
         let pill = Rect::from_min_size(pos2(rect.center().x + 3.0, rect.min.y + 3.0),
@@ -566,7 +571,7 @@ impl Ui {
                     vec![button("alts", Icon::Alts, "Alts", open(Drop::Alts), true, Some(alts)),
                          button("games", Icon::Games, "Recent games", open(Drop::Games), true, None),
                          button("servers", Icon::Servers, "Servers", open(Drop::Servers), in_game, None)],
-                    vec![button("link", Icon::Copy, "Copy join link", false, in_game, None),
+                    vec![button("link", Icon::Link, "Copy join link", false, in_game, None),
                          button("rejoin", Icon::Refresh, "Rejoin", false, in_game, None)],
                 ];
                 let mut right = bar.max.x - INSET;
@@ -738,7 +743,7 @@ impl Ui {
             Some(id) => egui::Image::new((id, icon.size())).corner_radius(CornerRadius::same(8)).paint_at(ui, icon),
             None => {
                 ui.painter().rect_filled(icon, CornerRadius::same(8), c.surface);
-                paint_icon(ui.painter(), icon.shrink(8.0), Icon::Games, c.subtext);
+                paint_icon(ui.painter(), icon.shrink(8.0), Icon::Game, c.subtext);
             }
         }
         let x = icon.max.x + 12.0;
