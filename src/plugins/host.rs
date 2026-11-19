@@ -25,8 +25,8 @@ const LOAD_LIMIT: Duration = Duration::from_secs(1);
 const MEMORY_LIMIT: usize = 32 << 20;
 /// How often the plugins folder and the settings are looked at.
 const SCAN_EVERY: Duration = Duration::from_secs(1);
-/// Plugin buttons on the bar, at most.
-pub const MOST_BUTTONS: usize = 4;
+/// Plugins in the bar's list, at most.
+pub const MOST_BUTTONS: usize = 32;
 /// A plugin's failures are toasted at most this often (they're all logged).
 const COMPLAIN_EVERY: Duration = Duration::from_secs(60);
 
@@ -372,7 +372,8 @@ impl Host {
                         });
                         let Some(f) = found else { return };
                         let arg = match (what.as_str(), value) {
-                            ("change", Some(Value::Bool(on))) => LuaValue::Boolean(on),
+                            // a toggle's bool, a slider's or a seek's number
+                            ("change", Some(value)) => api::to_lua(&lua, &value).unwrap_or(LuaValue::Nil),
                             ("submit", Some(Value::String(text))) => {
                                 lua.create_string(text.chars().take(2000).collect::<String>())
                                     .map(LuaValue::String).unwrap_or(LuaValue::Nil)
@@ -469,7 +470,7 @@ impl Host {
                     }
                 }
                 Err(error) => {
-                    let menu = mace_proto::Menu { title: name.clone(), subtitle: None, children: vec![
+                    let menu = mace_proto::Menu { title: name.clone(), subtitle: None, below: Vec::new(), children: vec![
                         mace_proto::Node::text(format!("This menu failed: {}", brief(&error)), "subtle"),
                     ] };
                     self.out.borrow_mut().push(FromHost::Menu { plugin: id.clone(), button, menu });
@@ -481,7 +482,7 @@ impl Host {
             .filter_map(|p| {
                 let c = ctx(&p.lua).ok()?;
                 let b = c.button.borrow().clone()?;
-                Some(PluginButton { plugin: c.id.clone(), id: b.id, icon: b.icon, tip: b.tip, badge: b.badge })
+                Some(PluginButton { plugin: c.id.clone(), id: b.id, icon: b.icon, tip: b.tip, badge: b.badge, idle: b.idle })
             })
             .take(MOST_BUTTONS)
             .collect();
@@ -897,5 +898,33 @@ mod tests {
         std::thread::sleep(Duration::from_millis(150));
         host.run_timers();
         assert!(host.next_wake() <= Duration::from_millis(100));
+    }
+
+    #[test]
+    fn sliders_pop_outs_and_idling() {
+        let _home = TempHome::new();
+        turned_on("knob", &[], r#"
+            local level = 0.5
+            local button
+            button = mace.bar.button({ id = "b", menu = function()
+                return mace.ui.menu({ below = { mace.ui.slider(level, { icon = "volume_up", onChange = function(v)
+                    level = v
+                end }) } }, { mace.ui.text(`{level}`) })
+            end })
+            mace.on("left", function() button:set({ idle = true }) end)
+        "#);
+        let mut host = host();
+        let menu = menu_of(&ui(&mut host, "knob", "", "open", None));
+        let Some(Node::Slider { value, max, key: Some(key), icon: Some(icon), .. }) = menu.below.first().cloned() else {
+            panic!("{menu:?}")
+        };
+        assert_eq!((value, max, icon.as_str()), (0.5, 1.0, "volume_up"));
+        // a number reaches the callback
+        let menu = menu_of(&ui(&mut host, "knob", &key, "change", Some(json!(0.25))));
+        assert_eq!(menu.children[0], Node::text("0.25", ""));
+        // nothing to show: the panel hears it's idle
+        host.handle(ToHost::Event { name: "left".into(), data: Value::Null });
+        host.settle();
+        assert!(host.take_output().iter().any(|m| matches!(m, FromHost::Buttons { buttons } if buttons[0].idle)));
     }
 }

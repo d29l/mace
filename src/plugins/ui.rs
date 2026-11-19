@@ -17,7 +17,8 @@ local function options(o)
 end
 function ui.menu(props, children)
     props = options(props)
-    return { type = "menu", title = props.title, subtitle = props.subtitle, children = children or props.children or {} }
+    return { type = "menu", title = props.title, subtitle = props.subtitle, children = children or props.children or {},
+             below = props.below }
 end
 function ui.text(text, o)
     o = options(o)
@@ -56,6 +57,10 @@ end
 function ui.image(image, o)
     o = options(o)
     return { type = "image", image = image, size = if o.size == nil then nil else tostring(o.size) }
+end
+function ui.slider(value, o)
+    o = options(o)
+    return { type = "slider", value = value, min = o.min, max = o.max, icon = o.icon, onChange = o.onChange }
 end
 function ui.overlay(children, o)
     o = options(o)
@@ -210,6 +215,13 @@ fn node(lua: &Lua, value: LuaValue, keys: &mut Keys, depth: usize) -> mlua::Resu
             children: children(lua, &t, keys, depth)?,
         },
         "space" => Node::Space { size: style(&t, "size")? },
+        "slider" => Node::Slider {
+            value: t.get::<Option<f64>>("value")?.unwrap_or(0.0),
+            min: t.get::<Option<f64>>("min")?.unwrap_or(0.0),
+            max: t.get::<Option<f64>>("max")?.unwrap_or(1.0),
+            icon: text(&t, "icon")?.map(|i| icon(lua, keys.ctx, &i)).transpose()?,
+            key: keys.key(t.get("onChange")?)?,
+        },
         "progress" => Node::Progress {
             value: t.get::<Option<f64>>("value")?.unwrap_or(0.0),
             max: t.get::<Option<f64>>("max")?.unwrap_or(1.0),
@@ -240,5 +252,15 @@ pub fn to_menu(lua: &Lua, value: LuaValue, keys: &mut Keys) -> mlua::Result<Menu
         title: text(&t, "title")?.unwrap_or_default(),
         subtitle: text(&t, "subtitle")?,
         children: children(lua, &t, keys, 0)?,
+        below: match t.get::<LuaValue>("below")? {
+            LuaValue::Table(below) => {
+                let mut nodes = Vec::new();
+                for child in below.sequence_values::<LuaValue>() {
+                    nodes.push(node(lua, child?, keys, 1)?);
+                }
+                nodes
+            }
+            _ => Vec::new(),
+        },
     })
 }

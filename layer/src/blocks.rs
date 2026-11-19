@@ -94,7 +94,7 @@ fn spans(node: &Node) -> bool {
 /// Blocks that take the room there is (in a row, the room the others leave).
 fn fills(node: &Node) -> bool {
     match node {
-        Node::Progress { .. } | Node::Input { .. } | Node::Row { .. } | Node::Toggle { .. } => true,
+        Node::Progress { .. } | Node::Slider { .. } | Node::Input { .. } | Node::Row { .. } | Node::Toggle { .. } => true,
         Node::Stack { grow, .. } => *grow,
         Node::Image { size, .. } => size == "fill",
         _ => false,
@@ -166,6 +166,7 @@ impl Ui {
             Node::Toggle { .. } => vec2(width, 40.0),
             Node::Input { .. } => vec2(width, 38.0),
             Node::Progress { times, .. } => vec2(width, if *times { 26.0 } else { 6.0 }),
+            Node::Slider { .. } => vec2(width, 28.0),
             Node::Image { size, .. } => {
                 let side = image_side(size, width);
                 vec2(side, side)
@@ -374,6 +375,48 @@ impl Ui {
                     painter.text(rect.max, Align2::RIGHT_BOTTOM, clock(max), regular(11.5), c.subtext);
                 }
                 if *rate != 0.0 || hovered {
+                    ui.ctx().request_repaint();
+                }
+            }
+            Node::Slider { value, min, max, icon, key } => {
+                let held = format!("{}/{}/{path}", at.plugin, at.button);
+                let mut x = rect.min.x;
+                if let Some(icon) = icon.as_deref() {
+                    let icon = self.plugin_icon(ui.ctx(), icon, &d.avatars);
+                    paint_icon(ui.painter(), Rect::from_center_size(pos2(x + 10.0, rect.center().y), vec2(20.0, 20.0)), icon, c.text);
+                    x += 30.0;
+                }
+                let track = Rect::from_min_max(pos2(x + 2.0, rect.center().y - 2.0), pos2(rect.max.x - 2.0, rect.center().y + 2.0));
+                let span = (max - min).max(f64::EPSILON);
+                // where it is: what Mace said, or what was just picked (until Mace's next menu)
+                let mut now = *value;
+                match self.seeks.get(&held) {
+                    Some((to, when)) if *when > at.arrived && when.elapsed().as_secs_f32() < 3.0 => now = *to,
+                    Some(_) => {
+                        self.seeks.remove(&held);
+                    }
+                    None => {}
+                }
+                let response = ui.interact(track.expand2(vec2(4.0, 10.0)), id, Sense::click_and_drag());
+                let pointer = response.interact_pointer_pos();
+                let picked = |p: egui::Pos2| min + ((p.x - track.min.x) / track.width()).clamp(0.0, 1.0) as f64 * span;
+                if let Some(p) = pointer.filter(|_| response.dragged() || response.clicked() || response.drag_stopped()) {
+                    now = picked(p);
+                    // while dragging, now and then; and where it's let go
+                    let due = self.seeks.get(&held).is_none_or(|(_, when)| when.elapsed().as_secs_f32() > 0.08);
+                    if due || response.clicked() || response.drag_stopped() {
+                        self.seeks.insert(held, (now, Instant::now()));
+                        at.send(actions, key, "change", Some(serde_json::json!(now)));
+                    }
+                }
+                let filled = ((now - min) / span).clamp(0.0, 1.0) as f32;
+                let active = response.hovered() || response.dragged();
+                let painter = ui.painter();
+                painter.rect_filled(track, CornerRadius::same(2), c.hover.lerp_to_gamma(c.text, 0.18));
+                painter.rect_filled(Rect::from_min_size(track.min, vec2(track.width() * filled, track.height())), CornerRadius::same(2),
+                                    if active { c.accent } else { c.text.gamma_multiply(0.85) });
+                painter.circle_filled(pos2(track.min.x + track.width() * filled, track.center().y), if active { 7.0 } else { 5.0 }, c.text);
+                if active {
                     ui.ctx().request_repaint();
                 }
             }

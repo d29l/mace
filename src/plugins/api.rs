@@ -35,6 +35,8 @@ pub struct ButtonDef {
     pub icon: String,
     pub tip: String,
     pub badge: Option<u32>,
+    /// Nothing to show now: its card is hidden until it has.
+    pub idle: bool,
 }
 
 /// One plugin's side of the host, kept in its Luau state's app data. Only
@@ -462,6 +464,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
             icon: super::ui::icon(lua, &c, &icon)?,
             tip: def.get::<Option<String>>("tip")?.unwrap_or_else(|| c.name.clone()),
             badge: def.get::<Option<u32>>("badge")?,
+            idle: def.get::<Option<bool>>("idle")?.unwrap_or(false),
         };
         *c.button.borrow_mut() = Some(made);
         if let Some(menu) = def.get::<Option<Function>>("menu")? {
@@ -473,6 +476,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
             let icon = changes.get::<Option<String>>("icon")?.map(|i| super::ui::icon(lua, &c, &i)).transpose()?;
             let tip = changes.get::<Option<String>>("tip")?;
             let badge = changes.get::<Option<u32>>("badge")?;
+            let idle = changes.get::<Option<bool>>("idle")?;
             if let Some(button) = c.button.borrow_mut().as_mut() {
                 if let Some(icon) = icon {
                     button.icon = icon;
@@ -482,6 +486,9 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
                 }
                 if let Some(badge) = badge {
                     button.badge = (badge > 0).then_some(badge);
+                }
+                if let Some(idle) = idle {
+                    button.idle = idle;
                 }
             }
             Ok(())
@@ -570,6 +577,16 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
         let c = ctx(lua)?;
         c.need("media")?;
         Ok(c.waiting(|| super::media::control(player.as_deref(), "seek", Some(seconds))))
+    })?)?;
+    media.set("volume", lua.create_function(|lua, player: Option<String>| {
+        let c = ctx(lua)?;
+        c.need("media")?;
+        Ok(c.waiting(|| super::media::volume(player.as_deref())))
+    })?)?;
+    media.set("setVolume", lua.create_function(|lua, (level, player): (f64, Option<String>)| {
+        let c = ctx(lua)?;
+        c.need("media")?;
+        Ok(c.waiting(|| super::media::set_volume(player.as_deref(), level)))
     })?)?;
     media.set_readonly(true);
     mace.set("media", media)?;

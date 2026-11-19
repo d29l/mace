@@ -107,6 +107,9 @@ pub struct Pin {
     pub w: f32,
     #[serde(default)]
     pub h: f32,
+    /// Turned off for now (from the bar): kept where it was, not shown.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 /// A key and its modifiers, by physical position (SDL scancodes).
@@ -258,6 +261,9 @@ pub struct PluginButton {
     pub tip: String,
     #[serde(default)]
     pub badge: Option<u32>,
+    /// It has nothing to show now (music that stopped): its card is hidden until it has.
+    #[serde(default)]
+    pub idle: bool,
 }
 
 /// A plugin's drop-down.
@@ -268,6 +274,10 @@ pub struct Menu {
     pub subtitle: Option<String>,
     #[serde(default)]
     pub children: Vec<Node>,
+    /// What pops out under the card, in a card of its own as tall as it needs
+    /// (lyrics under a player); none: nothing pops out.
+    #[serde(default)]
+    pub below: Vec<Node>,
 }
 
 /// One building block of a plugin's menu. Styles are names, so a newer Mace's
@@ -369,6 +379,20 @@ pub enum Node {
         #[serde(default)]
         key: Option<String>,
     },
+    /// A bar with a knob, from `min` to `max` (0 to 1 when not said), at
+    /// `value`; dragging it sends `change` with the new value. An icon may go
+    /// before it.
+    Slider {
+        value: f64,
+        #[serde(default)]
+        min: f64,
+        #[serde(default = "one")]
+        max: f64,
+        #[serde(default)]
+        icon: Option<String>,
+        #[serde(default)]
+        key: Option<String>,
+    },
     /// A picture on its own: a file of the plugin's or one from its sites,
     /// sent as an `Avatar`; `size`: small, medium (the default), large, fill
     /// (as wide as there's room for) or a number of points. Square.
@@ -380,6 +404,10 @@ pub enum Node {
     /// What an older panel gets for a block a newer Mace has: nothing.
     #[serde(other)]
     Unknown,
+}
+
+fn one() -> f64 {
+    1.0
 }
 
 impl Node {

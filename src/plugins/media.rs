@@ -161,6 +161,49 @@ pub fn control(hint: Option<&str>, action: &str, seconds: Option<f64>) -> bool {
     call(&bus, &name, PATH, PLAYER, action, None).is_some()
 }
 
+/// The player's own sound stream (PipeWire or PulseAudio), found by its
+/// program's name: `spotify`, or `brave` for `brave.instance2453`.
+fn stream(player: &str) -> Option<Value> {
+    let name = player.split('.').next()?.to_lowercase();
+    crate::processes::sink_inputs().into_iter().find(|s| {
+        let property = |key: &str| s.pointer(&format!("/properties/{key}")).and_then(Value::as_str).unwrap_or("").to_lowercase();
+        property("application.process.binary").contains(&name) || property("application.name").contains(&name)
+    })
+}
+
+/// A stream's volume, 0 to 1 (its first channel's; 1 is 100%).
+fn stream_volume(stream: &Value) -> Option<f64> {
+    let first = stream.get("volume")?.as_object()?.values().next()?;
+    Some(first.get("value")?.as_f64()? / 65536.0)
+}
+
+/// How loud the player is, 0 to 1: its sound stream's volume, or what it says
+/// over MPRIS (some players, Spotify among them, don't act on that).
+pub fn volume(hint: Option<&str>) -> Option<f64> {
+    let bus = bus()?;
+    let (player, _) = choose(&bus, hint)?;
+    if let Some(level) = stream(&player).as_ref().and_then(stream_volume) {
+        return Some(level);
+    }
+    let args = (PLAYER, "Volume").to_variant();
+    let reply = call(&bus, &format!("{PREFIX}{player}"), PATH, "org.freedesktop.DBus.Properties", "Get", Some(&args))?;
+    unbox(reply.child_value(0)).get::<f64>()
+}
+
+/// Set how loud the player is, 0 to 1: its sound stream when it has one, else over MPRIS.
+pub fn set_volume(hint: Option<&str>, level: f64) -> bool {
+    let Some(bus) = bus() else { return false };
+    let Some((player, _)) = choose(&bus, hint) else { return false };
+    let level = level.clamp(0.0, 1.0);
+    if let Some(index) = stream(&player).and_then(|s| s.get("index").and_then(Value::as_u64)) {
+        return std::process::Command::new("pactl")
+            .args(["set-sink-input-volume", &index.to_string(), &format!("{}%", (level * 100.0).round())])
+            .status().is_ok_and(|s| s.success());
+    }
+    let args = (PLAYER, "Volume", level.to_variant()).to_variant();
+    call(&bus, &format!("{PREFIX}{player}"), PATH, "org.freedesktop.DBus.Properties", "Set", Some(&args)).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +216,7 @@ mod tests {
         <property name="PlaybackStatus" type="s" access="read"/>
         <property name="Metadata" type="a{sv}" access="read"/>
         <property name="Position" type="x" access="read"/>
+        <property name="Volume" type="d" access="readwrite"/>
     </interface></node>"#;
 
     /// A player on a private bus, the way Spotify answers: (the bus, how often it was told to play or pause).
@@ -196,6 +240,8 @@ mod tests {
                     let bus = gio::DBusConnection::for_address_sync(&address, flags, None, gio::Cancellable::NONE).unwrap();
                     let info = gio::DBusNodeInfo::for_xml(INTERFACE).unwrap();
                     let interface = info.lookup_interface(PLAYER).unwrap();
+                    let level = std::rc::Rc::new(std::cell::Cell::new(0.8f64));
+                    let level_set = level.clone();
                     let _id = bus.register_object(PATH, &interface)
                         .method_call(move |_, _, _, _, method, _, invocation| {
                             if method == "PlayPause" {
@@ -203,8 +249,15 @@ mod tests {
                             }
                             invocation.return_value(None);
                         })
-                        .property(|_, _, _, _, name| match name {
+                        .set_property(move |_, _, _, _, name, value| {
+                            if name == "Volume" && let Some(v) = value.get::<f64>() {
+                                level_set.set(v);
+                            }
+                            true
+                        })
+                        .property(move |_, _, _, _, name| match name {
                             "PlaybackStatus" => "Playing".to_variant(),
+                            "Volume" => level.get().to_variant(),
                             "Position" => 31_200_000i64.to_variant(),
                             _ => {
                                 let meta = glib::VariantDict::new(None);
@@ -241,9 +294,21 @@ mod tests {
         // SAFETY: TempHome holds the environment lock.
         unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", &address) };
         // on a thread of its own, so the bus it finds is this one
-        let (now, players, toggled) = std::thread::spawn(|| {
-            (current(Some("spotify")), players(), control(Some("spotify"), "PlayPause", None))
+        // no sound server: the volume goes over MPRIS (and nothing real is touched)
+        let pulse = std::env::var_os("PULSE_SERVER");
+        unsafe { std::env::set_var("PULSE_SERVER", "unix:/nonexistent/mace-test") };
+        let (now, players, toggled, volumes) = std::thread::spawn(|| {
+            let before = volume(Some("spotify"));
+            let set = set_volume(Some("spotify"), 0.4);
+            (current(Some("spotify")), players(), control(Some("spotify"), "PlayPause", None), (before, set, volume(Some("spotify"))))
         }).join().unwrap();
+        unsafe {
+            match pulse {
+                Some(v) => std::env::set_var("PULSE_SERVER", v),
+                None => std::env::remove_var("PULSE_SERVER"),
+            }
+        }
+        assert_eq!(volumes, (Some(0.8), true, Some(0.4)));
         unsafe {
             match before {
                 Some(v) => std::env::set_var("DBUS_SESSION_BUS_ADDRESS", v),

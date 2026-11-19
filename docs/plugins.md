@@ -151,23 +151,30 @@ to it would be.
 
 ### The bar
 
-`mace.bar.button(definition)` adds the plugin's button (one per plugin):
+`mace.bar.button(definition)` gives the plugin its widget (one per plugin): its
+menu, as a card. The bar has one button for every plugin, the puzzle piece;
+its list turns each plugin's widget on screen and off. A widget on screen is
+pinned: it stays while players play, where they put it, at the size they made
+it.
 
 ```lua
 local button = mace.bar.button({
     id = "main",         -- a name for it (default "main")
-    icon = "star",       -- see Icons
-    tip = "Hello",       -- shown on hover (default: the plugin's name)
-    badge = 3,           -- a small number on it (optional)
-    menu = function(room) -- what its drop-down shows (optional; room: see Menus)
+    icon = "star",       -- in the plugins list (see Icons)
+    tip = "Hello",       -- its name in that list (default: the plugin's name)
+    idle = false,        -- nothing to show now: its widget is hidden until it's false again
+    menu = function(room) -- what its widget shows (optional; room: see Menus)
         return mace.ui.menu({ title = "Hello" }, { mace.ui.text("Hi!") })
     end,
 })
 
-button:set({ badge = 0, tip = "Hi again", icon = "bolt" }) -- change it later (badge 0 hides it)
+button:set({ tip = "Hi again", icon = "bolt" })   -- change it later
+button:set({ idle = true })                     -- music stopped: hide the widget for now
 ```
 
-The bar has room for 4 plugin buttons, beside Mace's own.
+A plugin that only sometimes has something to show (a player, while nothing
+plays) sets `idle`, and its widget goes away until it sets it back; the player
+doesn't have to turn it off and on.
 
 - `mace.bar.close()` closes the bar, as Mace does after a join.
 - `mace.refresh()` draws the open menu again (after a timer changed something).
@@ -175,9 +182,8 @@ The bar has room for 4 plugin buttons, beside Mace's own.
   request's answer comes. A redraw that comes out the same isn't sent to the
   game, so refreshing often is cheap.
 
-Players can pin a menu (the pin in its corner): it then stays on screen
-while they play, where they put it, at the size they made it (by its
-corner), and your menu function keeps being called as if it were open.
+While a widget is on screen, your menu function keeps being called as if its
+menu were open.
 While the mouse is free (not held by the game's camera), a pinned menu can
 be clicked without opening the bar; typing into it needs the bar open.
 
@@ -239,12 +245,18 @@ mace.media.next()
 mace.media.previous()
 mace.media.seek(60)        -- to one minute in
 mace.media.players()       -- { "spotify", "brave.instance2453" }
+mace.media.volume()        -- 0.65 (0 to 1), or nil
+mace.media.setVolume(0.4)
 ```
 
 `length` and `position` are in seconds. Each function takes a player's name
 last, to pick one (`mace.media.current("spotify")`); without it, the one
 playing is used. The `media` event comes when the song changes or it's paused
 or played, with `current()` (or `nil` when the player went away).
+
+The volume is the player's own sound stream (PipeWire or PulseAudio), so it
+works with players that ignore volume over MPRIS, Spotify among them; it
+changes only that player, not the rest of the desktop.
 
 ### Printing
 
@@ -309,6 +321,7 @@ ui.menu({ title = "Title", subtitle = "a line under it" }, {
     ui.space("medium"),                              -- "small", "medium" or "large"
     ui.progress(31, 215, { rate = 1, times = true, onSeek = function(to) … end }), -- see below
     ui.image("https://i.scdn.co/image/…", { size = "medium" }), -- see below
+    ui.slider(0.65, { min = 0, max = 1, icon = "volume_up", onChange = function(v) … end }),
 })
 ```
 
@@ -339,6 +352,16 @@ the plugin's folder, or an `https://` picture from one of its sites (any
 common format; drawn square, cropped to its middle). `size` is "small" (48),
 "medium" (96, the default), "large" (160), "fill" (as wide as there's room
 for), or a number of points.
+
+**Sliders.** `ui.slider(value, { min, max, icon, onChange })` is a bar with a
+knob, from `min` to `max` (0 and 1 when not given). Dragging it calls
+`onChange` with the new value, every so often while dragging and where it's
+let go.
+
+**What pops out.** `ui.menu({ below = { … } }, blocks)`: the blocks in
+`below` pop out under the card, in a card of their own as tall as they need,
+whatever the size of the card above (lyrics or a volume slider under a
+player). Leave it empty and nothing pops out.
 
 **No title.** A menu without a title has no header, and its card has thin
 margins: the grip to move it (top middle) and its pin (top left) show over it

@@ -508,6 +508,8 @@ enum Drop {
     Games,
     /// A plugin's menu (which one: `Ui::plugin_drop`).
     Plugin,
+    /// The plugins' list: their widgets, on screen or not.
+    Plugins,
 }
 
 /// What a drop-down shows. Pinned, it stays on screen while the panel is closed.
@@ -516,6 +518,7 @@ enum Card {
     Servers,
     Alts,
     Games,
+    Plugins,
     Plugin(String, String),
 }
 
@@ -525,6 +528,7 @@ impl Card {
             Card::Servers => "servers".into(),
             Card::Alts => "alts".into(),
             Card::Games => "games".into(),
+            Card::Plugins => "plugins".into(),
             Card::Plugin(plugin, button) => format!("plugin:{plugin}/{button}"),
         }
     }
@@ -534,6 +538,7 @@ impl Card {
             "servers" => Card::Servers,
             "alts" => Card::Alts,
             "games" => Card::Games,
+            "plugins" => Card::Plugins,
             _ => {
                 let (plugin, button) = id.strip_prefix("plugin:")?.split_once('/')?;
                 Card::Plugin(plugin.into(), button.into())
@@ -546,8 +551,6 @@ impl Card {
     }
 }
 
-/// The bar's own pin.
-const BAR_PIN: &str = "bar";
 /// A pinned card can't be made smaller than this.
 const MIN_CARD: egui::Vec2 = egui::vec2(200.0, 44.0);
 
@@ -593,6 +596,8 @@ pub struct Ui {
     sizes: HashMap<(String, String), (f32, f32)>,
     /// Where pinned things were drawn this frame: clicks there are theirs, the panel open or not.
     pub hits: Vec<Rect>,
+    /// The screen, as of this frame.
+    screen: Option<Rect>,
     /// Plugin pictures made into white masks, to draw as icons.
     masks: HashMap<String, (Avatar, egui::TextureHandle)>,
     /// What's typed in plugin menus' text fields: (the value Mace gave, the text now), by place in the menu.
@@ -721,6 +726,7 @@ impl Ui {
             Drop::Servers => Some(Card::Servers),
             Drop::Alts => Some(Card::Alts),
             Drop::Games => Some(Card::Games),
+            Drop::Plugins => Some(Card::Plugins),
             Drop::Plugin => self.plugin_drop.clone().map(|(p, b)| Card::Plugin(p, b)),
         }
     }
@@ -744,7 +750,7 @@ impl Ui {
     fn set_pin(&mut self, id: &str, at: Option<egui::Pos2>, actions: &mut Vec<Action>) {
         self.pins.retain(|p| p.id != id);
         if let Some(at) = at {
-            self.pins.push(Pin { id: id.into(), x: at.x, y: at.y, w: 0.0, h: 0.0 });
+            self.pins.push(Pin { id: id.into(), x: at.x, y: at.y, w: 0.0, h: 0.0, hidden: false });
         }
         actions.push(Action::Send(ToMace::Pins { pins: self.pins.clone() }));
     }
@@ -752,7 +758,7 @@ impl Ui {
     /// Whether a plugin's button is still there (its card goes with it).
     fn card_exists(card: &Card, d: &Snapshot) -> bool {
         match card {
-            Card::Plugin(p, b) => d.plugins.iter().any(|x| x.plugin == *p && x.id == *b),
+            Card::Plugin(p, b) => d.plugins.iter().any(|x| x.plugin == *p && x.id == *b && !x.idle),
             _ => true,
         }
     }
@@ -765,7 +771,7 @@ impl Ui {
         {
             self.drop = Drop::None;
         }
-        let mut now: Vec<(String, String)> = self.pins.iter().filter_map(|p| match Card::from_id(&p.id) {
+        let mut now: Vec<(String, String)> = self.pins.iter().filter(|p| !p.hidden).filter_map(|p| match Card::from_id(&p.id) {
             Some(Card::Plugin(plugin, button)) if Self::card_exists(&Card::Plugin(plugin.clone(), button.clone()), d) => {
                 Some((plugin, button))
             }
@@ -831,11 +837,11 @@ impl Ui {
         let screen = ctx.content_rect();
 
         self.hits.clear();
+        self.screen = Some(root.ctx().content_rect());
         self.sync_pins(d);
         // as at the start of the frame: one pinned in it shows from the next (or its pin would take the same click)
         let pinned_before = self.pins.clone();
         let open = progress > 0.0;
-        let bar_pinned = self.is_pinned(BAR_PIN);
         if open {
             // the game behind: dimmed, and a click on it closes the panel
             egui::Area::new(egui::Id::unique("mace-backdrop")).order(egui::Order::Middle).fade_in(false).constrain(false)
@@ -848,17 +854,14 @@ impl Ui {
                     }
                 });
         }
-        if open || bar_pinned {
-            // comes down from above the top edge, fading in on the way (pinned, it's there already)
-            let slide = if bar_pinned { 1.0 } else { progress };
+        if open {
+            // comes down from above the top edge, fading in on the way
+            let slide = progress;
             let opacity = (slide * 1.6).min(1.0);
             let width = BAR_WIDEST.min(screen.width() - 48.0).max(300.0);
             let top = screen.min.y + BAR_TOP - (1.0 - slide) * (BAR_HEIGHT + BAR_TOP + 16.0);
             let bar = Rect::from_min_size(pos2(screen.center().x - width / 2.0, top), vec2(width, BAR_HEIGHT));
             self.bar(&ctx, c, d, bar, opacity, &mut actions);
-            if bar_pinned {
-                self.hits.push(bar);
-            }
             if open && let Some(card) = self.current_card().filter(|card| !self.is_pinned(&card.id())) {
                 // hangs from the bar's trailing end, under the buttons that open it
                 let w = f32::min(card.width(), bar.width());
@@ -870,6 +873,9 @@ impl Ui {
         }
         // what's pinned stays where it was put (inside the screen), the panel open or not
         for pin in pinned_before {
+            if pin.hidden {
+                continue;
+            }
             let Some(card) = Card::from_id(&pin.id).filter(|card| Self::card_exists(card, d)) else { continue };
             // its own size once resized, else as it comes
             let w = if pin.w > 0.0 { pin.w } else { card.width() }.clamp(MIN_CARD.x, (screen.width() - 16.0).max(MIN_CARD.x));
@@ -912,34 +918,26 @@ impl Ui {
                 // recent games, servers, copy this server's link, rejoin
                 let in_game = me.server.is_some();
                 let alts = d.state.as_ref().map_or(0, |s| s.accounts.iter().filter(|a| a.id != me.id && a.running).count());
-                let bar_pinned = self.is_pinned(BAR_PIN);
                 // a pinned card's button shows it's out
                 let open = |drop: Drop| self.drop == drop || match drop {
-                    Drop::Servers => self.is_pinned("servers"),
-                    Drop::Alts => self.is_pinned("alts"),
-                    Drop::Games => self.is_pinned("games"),
+                    Drop::Servers => self.is_shown("servers"),
+                    Drop::Alts => self.is_shown("alts"),
+                    Drop::Games => self.is_shown("games"),
                     _ => false,
                 };
                 let button = |salt: &str, icon, tip: &str, selected, enabled, badge| BarButton {
                     salt: salt.into(), icon, tip: tip.into(), selected, enabled, badge };
                 let mut buttons = vec![
                     button("settings", Icon::Settings, "Mace Settings", false, true, None),
-                    button("pin", Icon::Named("push_pin"), if bar_pinned { "Unpin the bar" } else { "Keep the bar on screen" },
-                           bar_pinned, true, None),
                     button("alts", Icon::Alts, "Alts", open(Drop::Alts), true, Some(alts)),
                     button("games", Icon::Games, "Recent games", open(Drop::Games), true, None),
                     button("servers", Icon::Servers, "Servers", open(Drop::Servers), in_game, None),
                     button("link", Icon::Link, "Copy join link", false, in_game, None),
                     button("rejoin", Icon::Refresh, "Rejoin", false, in_game, None),
                 ];
-                // the plugins' buttons, before the built-in ones
-                for (i, p) in d.plugins.iter().enumerate() {
-                    let icon = self.plugin_icon(ui.ctx(), &p.icon, &d.avatars);
-                    let selected = (self.drop == Drop::Plugin
-                        && self.plugin_drop.as_ref().is_some_and(|(plugin, id)| *plugin == p.plugin && *id == p.id))
-                        || self.is_pinned(&Card::Plugin(p.plugin.clone(), p.id.clone()).id());
-                    buttons.push(BarButton { salt: format!("plugin:{i}"), icon, tip: p.tip.clone(), selected, enabled: true,
-                                             badge: p.badge.map(|b| b as usize) });
+                // one button for every plugin: their widgets are switched on and off in its list
+                if !d.plugins.is_empty() {
+                    buttons.push(button("plugins", Icon::Named("extension"), "Plugins", self.drop == Drop::Plugins, true, None));
                 }
                 let mut right = bar.max.x - INSET;
                 let mut clicked = Vec::new();
@@ -959,8 +957,11 @@ impl Ui {
                                 self.say("Link copied");
                             }
                         }
+                        // a pinned card's button turns it off and on (kept where it is)
+                        "alts" | "games" | "servers" if self.is_pinned(salt.as_str()) => self.toggle_shown(salt.as_str(), actions),
                         "alts" => self.open_drop(Drop::Alts),
                         "games" => self.open_drop(Drop::Games),
+                        "plugins" => self.open_drop(Drop::Plugins),
                         "servers" => {
                             if let Some(server) = &me.server {
                                 self.open_browser(actions, &server.place);
@@ -970,10 +971,6 @@ impl Ui {
                             self.run(actions, &["settings"]);
                             self.say("Opening Mace Settings…");
                             actions.push(Action::Close);
-                        }
-                        "pin" => {
-                            let at = (!bar_pinned).then_some(pos2(0.0, 0.0));
-                            self.set_pin(BAR_PIN, at, actions);
                         }
                         "rejoin" => {
                             self.run(actions, &["rejoin", &me.id]);
@@ -1029,7 +1026,7 @@ impl Ui {
         };
         // a slim card has thin margins and no header at all: its grip and pin show over it when pointed at
         let (margin, top, bottom) = if strip { (10.0, 10.0, 8.0) } else { (20.0, 20.0, 20.0) };
-        egui::Area::new(egui::Id::unique(("mace-card", &id))).order(egui::Order::Foreground).fade_in(false).constrain(false)
+        let shown = egui::Area::new(egui::Id::unique(("mace-card", &id))).order(egui::Order::Foreground).fade_in(false).constrain(false)
             .fixed_pos(room.min)
             .show(ctx, |ui| {
                 ui.set_opacity(opacity);
@@ -1047,6 +1044,7 @@ impl Ui {
                             Card::Servers => self.servers(ui, c, d, actions),
                             Card::Alts => self.alts(ui, c, d, actions),
                             Card::Games => self.games(ui, c, d, actions),
+                            Card::Plugins => self.plugins_list(ui, c, d, actions),
                             Card::Plugin(plugin, button) => {
                                 // plugins hear the room their menu has (0 high: as tall as it needs)
                                 self.tell_size(plugin, button, width, if fixed { height } else { 0.0 }, actions);
@@ -1111,7 +1109,7 @@ impl Ui {
                     }
                 }
                 if strip && !near {
-                    return;
+                    return rect;
                 }
                 // slim: at the top left, over the corner (where Spotify's mini-player has its close)
                 let at = if strip {
@@ -1139,7 +1137,84 @@ impl Ui {
                         self.drop = Drop::None;
                     }
                 }
+                rect
             });
+        // what the plugin's menu has pop out under it, in a card of its own as tall as it needs
+        let Card::Plugin(plugin, button) = card else { return };
+        let Some((menu, arrived)) = d.menus.get(&(plugin.clone(), button.clone())).cloned() else { return };
+        if menu.below.is_empty() {
+            return;
+        }
+        let rect = shown.inner;
+        let below = egui::Area::new(egui::Id::unique(("mace-card-below", &id))).order(egui::Order::Foreground).fade_in(false)
+            .constrain(false).fixed_pos(pos2(rect.min.x, rect.max.y + 6.0))
+            .show(ctx, |ui| {
+                ui.set_opacity(opacity);
+                egui::Frame::new().fill(c.background).corner_radius(CornerRadius::same(16)).inner_margin(12.0).shadow(shadow())
+                    .show(ui, |ui| {
+                        ui.set_width(rect.width() - 24.0);
+                        ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+                        let at = PluginAt { plugin, button, arrived };
+                        for (i, node) in menu.below.iter().enumerate() {
+                            self.block(ui, c, d, node, &at, &format!("b{i}"), actions);
+                        }
+                    }).response.rect
+            });
+        if pinned {
+            self.hits.push(below.inner);
+        }
+    }
+
+    /// Whether a pinned card is on screen (not turned off from the bar).
+    fn is_shown(&self, id: &str) -> bool {
+        self.pins.iter().any(|p| p.id == id && !p.hidden)
+    }
+
+    /// Turn a widget (a pinned card) off or on from the bar, kept where it
+    /// was; one never pinned shows at the right, under the bar.
+    fn toggle_shown(&mut self, id: &str, actions: &mut Vec<Action>) {
+        match self.pins.iter_mut().find(|p| p.id == id) {
+            Some(pin) => pin.hidden = !pin.hidden,
+            None => {
+                let screen = self.screen.unwrap_or(Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 800.0)));
+                let w = Card::from_id(id).map_or(440.0, |c| c.width());
+                let at = pos2(screen.max.x - w - 24.0, screen.min.y + BAR_TOP + BAR_HEIGHT + 12.0);
+                self.pins.push(Pin { id: id.into(), x: at.x, y: at.y, w: 0.0, h: 0.0, hidden: false });
+            }
+        }
+        actions.push(Action::Send(ToMace::Pins { pins: self.pins.clone() }));
+    }
+
+    /// The plugins' list: each plugin's widget, and whether it's on screen.
+    fn plugins_list(&mut self, ui: &mut EUi, c: Colors, d: &Snapshot, actions: &mut Vec<Action>) {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        ui.scope(|ui| {
+            ui.set_max_width(ui.available_width() - 40.0);
+            title(ui, c, "Plugins", 16.0);
+        });
+        ui.add_space(8.0);
+        for p in d.plugins.clone() {
+            let id = Card::Plugin(p.plugin.clone(), p.id.clone()).id();
+            let on = self.is_shown(&id);
+            let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), Sense::click());
+            if response.hovered() {
+                ui.painter().rect_filled(rect, CornerRadius::same(12), c.hover);
+            }
+            let icon = self.plugin_icon(ui.ctx(), &p.icon, &d.avatars);
+            let picture = Rect::from_center_size(pos2(rect.min.x + 12.0 + 16.0, rect.center().y), vec2(32.0, 32.0));
+            ui.painter().circle_filled(picture.center(), 16.0, c.surface);
+            paint_icon(ui.painter(), picture.shrink(7.0), icon, c.text);
+            let line = if p.idle { "Nothing to show now" } else if on { "On screen" } else { "Off" };
+            let x = picture.max.x + 12.0;
+            two_lines_at(ui.painter(), c, x, rect.center().y, rect.max.x - 64.0 - x, &p.tip, line, 14.0);
+            let switch = Rect::from_center_size(pos2(rect.max.x - 12.0 - 18.0, rect.center().y), vec2(36.0, 20.0));
+            ui.painter().rect_filled(switch, CornerRadius::same(10), if on { c.accent } else { c.hover.lerp_to_gamma(c.text, 0.18) });
+            let knob = if on { switch.max.x - 10.0 } else { switch.min.x + 10.0 };
+            ui.painter().circle_filled(pos2(knob, switch.center().y), 7.0, if on { c.on_accent } else { c.text });
+            if response.clicked() {
+                self.toggle_shown(&id, actions);
+            }
+        }
     }
 
     /// Tell a plugin the room its menu has, when that changed.
@@ -1651,12 +1726,12 @@ mod clicks {
     }
 
     #[test]
-    fn a_plugin_button_opens_its_menu_and_mace_hears_of_it() {
+    fn the_plugins_button_puts_widgets_on_screen_and_takes_them_off() {
         let ctx = egui::Context::default();
         setup(&ctx);
         let mut ui = Ui::default();
         let mut data = snapshot(vec![]);
-        data.plugins = vec![PluginButton { plugin: "p".into(), id: "b".into(), icon: "star".into(), tip: "P".into(), badge: Some(2) }];
+        data.plugins = vec![PluginButton { plugin: "p".into(), id: "b".into(), icon: "star".into(), tip: "P".into(), badge: None, idle: false }];
         let run = |ui: &mut Ui, events: Vec<egui::Event>, data: &Snapshot| {
             let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))), events,
                                        ..Default::default() };
@@ -1665,20 +1740,33 @@ mod clicks {
             deltas.clear();
             actions
         };
+        let tap = |ui: &mut Ui, at: Pos2, data: &Snapshot| {
+            run(ui, vec![egui::Event::PointerMoved(at)], data);
+            run(ui, vec![click(at, true)], data);
+            run(ui, vec![click(at, false)], data)
+        };
         run(&mut ui, vec![], &data);
-        // left of the seven built-in buttons, which go from the bar's trailing end
+        // the puzzle piece: left of the six built-in buttons, which go from the bar's trailing end
         let width = BAR_WIDEST.min(1280.0 - 48.0);
-        let x = 640.0 + width / 2.0 - INSET - 7.0 * (CONTROL + BUTTON_GAP) - CONTROL / 2.0;
-        let at = pos2(x, BAR_TOP + BAR_HEIGHT / 2.0);
-        run(&mut ui, vec![egui::Event::PointerMoved(at)], &data);
-        run(&mut ui, vec![click(at, true)], &data);
-        let actions = run(&mut ui, vec![click(at, false)], &data);
-        assert!(ui.drop == Drop::Plugin);
+        let right = 640.0 + width / 2.0;
+        let x = right - INSET - 6.0 * (CONTROL + BUTTON_GAP) - CONTROL / 2.0;
+        tap(&mut ui, pos2(x, BAR_TOP + BAR_HEIGHT / 2.0), &data);
+        assert!(ui.drop == Drop::Plugins);
+        // its first row: the plugin's widget goes on screen, and the plugin hears its menu is showing
+        let row = pos2(right - 220.0, BAR_TOP + BAR_HEIGHT + 8.0 + 20.0 + 49.0 + 26.0);
+        let actions = tap(&mut ui, row, &data);
+        assert_eq!(sent_pins(&actions), Some(vec!["plugin:p/b".to_string()]));
+        assert!(ui.is_shown("plugin:p/b"));
         assert_eq!(sent_plugin(&actions), [(String::new(), "open".to_string(), None)]);
-        // its button goes away: the menu closes, and Mace hears that too
-        data.plugins.clear();
-        let actions = run(&mut ui, vec![], &data);
-        assert!(ui.drop == Drop::None);
+        // the plugin has nothing to show: its widget goes, and the plugin hears that
+        data.plugins[0].idle = true;
+        assert_eq!(sent_plugin(&run(&mut ui, vec![], &data)), [(String::new(), "close".to_string(), None)]);
+        data.plugins[0].idle = false;
+        run(&mut ui, vec![], &data);
+        // off again from the list: kept where it was, hidden
+        let actions = tap(&mut ui, row, &data);
+        assert_eq!(sent_pins(&actions), Some(vec!["plugin:p/b".to_string()]));
+        assert!(ui.is_pinned("plugin:p/b") && !ui.is_shown("plugin:p/b"));
         assert_eq!(sent_plugin(&actions), [(String::new(), "close".to_string(), None)]);
     }
 
@@ -1749,7 +1837,7 @@ mod clicks {
         let mut ui = Ui { drop: Drop::Plugin, plugin_drop: Some(("notes".into(), "notes".into())), ..Default::default() };
         let mut data = snapshot(vec![]);
         data.plugins = vec![PluginButton { plugin: "notes".into(), id: "notes".into(), icon: "sticky_note_2".into(),
-                                           tip: "Notes".into(), badge: None }];
+                                           tip: "Notes".into(), badge: None, idle: false }];
         let menu: Menu = serde_json::from_str(r#"{"title":"Notes","subtitle":"Sample Obby","children":[
             {"type":"text","text":"The secret door is behind the waterfall.","style":"normal"},
             {"type":"input","placeholder":"Change the note","value":"x","key":"k1"},
@@ -1776,7 +1864,7 @@ mod clicks {
         setup(&ctx);
         let mut ui = Ui { drop: Drop::Plugin, plugin_drop: Some(("p".into(), "b".into())), ..Default::default() };
         let mut data = snapshot(vec![]);
-        data.plugins = vec![PluginButton { plugin: "p".into(), id: "b".into(), icon: "star".into(), tip: "P".into(), badge: None }];
+        data.plugins = vec![PluginButton { plugin: "p".into(), id: "b".into(), icon: "star".into(), tip: "P".into(), badge: None, idle: false }];
         let menu: Menu = serde_json::from_str(r#"{"title":"P","children":[{"type":"progress","value":5,"max":10,"rate":1}]}"#).unwrap();
         data.menus.insert(("p".into(), "b".into()), (Arc::new(menu), Instant::now()));
         let run = |ui: &mut Ui, progress: f32, events: Vec<egui::Event>, data: &Snapshot| {
@@ -1807,20 +1895,6 @@ mod clicks {
         // unpinned (as another game's panel might): closed, so the plugin hears it's gone
         data.config.as_mut().unwrap().pins.clear();
         assert_eq!(sent_plugin(&run(&mut ui, 0.0, vec![], &data)), [(String::new(), "close".to_string(), None)]);
-    }
-
-    #[test]
-    fn the_bar_pins_itself() {
-        let ctx = egui::Context::default();
-        setup(&ctx);
-        let mut ui = Ui::default();
-        frame(&ctx, &mut ui, 1.0, vec![], false, vec![]);
-        // second from the trailing end, after Mace Settings
-        let width = BAR_WIDEST.min(1280.0 - 48.0);
-        let x = 640.0 + width / 2.0 - INSET - (CONTROL + BUTTON_GAP) - CONTROL / 2.0;
-        let actions = clicked(&ctx, &mut ui, pos2(x, BAR_TOP + BAR_HEIGHT / 2.0));
-        assert_eq!(sent_pins(&actions), Some(vec!["bar".to_string()]));
-        assert!(ui.is_pinned(BAR_PIN));
     }
 
     #[test]
