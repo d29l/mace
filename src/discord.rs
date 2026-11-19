@@ -20,8 +20,8 @@ use crate::servers::{self, LogFollower};
 use crate::{panel, paths, processes, settings, supervisor};
 
 /// Mace's application on Discord, named "Roblox": that name is the "Playing ___".
-/// Empty: no status is shown.
-pub const APP_ID: &str = "";
+/// Not a secret: every Mace uses it.
+pub const APP_ID: &str = "1572147768573698148";
 
 const HANDSHAKE: u32 = 0;
 const FRAME: u32 = 1;
