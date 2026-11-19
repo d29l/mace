@@ -20,8 +20,8 @@ pub const CALL_LIMIT: Duration = Duration::from_millis(200);
 /// A plugin's storage, at most.
 const STORAGE_LIMIT: usize = 1 << 20;
 /// Timers that repeat run at most this often.
-const SHORTEST_EVERY: Duration = Duration::from_secs(1);
-pub const EVENTS: [&str; 5] = ["joined", "left", "opened", "closed", "focused"];
+const SHORTEST_EVERY: Duration = Duration::from_millis(100);
+pub const EVENTS: [&str; 6] = ["joined", "left", "opened", "closed", "focused", "media"];
 
 pub struct Timer {
     pub id: u64,
@@ -58,8 +58,71 @@ pub struct Ctx {
     pub dirty: Cell<bool>,
     /// When the call in progress has to be done by; None: no call, or waiting on the network.
     pub deadline: Cell<Option<Instant>>,
-    /// Pictures already sent to the panel.
+    /// Pictures already sent to the panel (or, from the web, on their way).
     pub images: RefCell<HashSet<String>>,
+    /// The sites it may reach: in its plugin.json, and agreed to when it was turned on.
+    pub sites: Vec<String>,
+    /// The sites its plugin.json names (more than `sites` when it added some since).
+    pub wanted: Vec<String>,
+    /// Where requests and pictures that finished are sent, for the host to hand over.
+    pub done: std::sync::mpsc::Sender<super::host::Input>,
+    pub in_flight: Cell<usize>,
+    /// When its last requests were made, for the per-minute limit.
+    pub recent: RefCell<std::collections::VecDeque<Instant>>,
+    /// The menu last sent, so an unchanged one isn't sent again.
+    pub last_menu: RefCell<Option<mace_proto::Menu>>,
+}
+
+/// Requests a plugin may have going at once, and make in a minute.
+const MOST_IN_FLIGHT: usize = 6;
+const MOST_A_MINUTE: usize = 120;
+
+impl Ctx {
+    /// A site the plugin may reach, or why not.
+    pub fn may_reach(&self, url: &str) -> mlua::Result<String> {
+        let host = super::net::host_of(url).map_err(mlua::Error::runtime)?;
+        if super::site_allowed(&self.sites, &host) {
+            return Ok(host);
+        }
+        Err(mlua::Error::runtime(if super::site_allowed(&self.wanted, &host) {
+            format!("{host} was added to plugin.json since the plugin was turned on: turn it off and on again in Mace Settings")
+        } else {
+            format!("{host} isn't one of the plugin's sites: add it to plugin.json's \"http\"")
+        }))
+    }
+
+    /// Count a request against the limits, or say it's one too many.
+    fn may_request(&self) -> mlua::Result<()> {
+        let mut recent = self.recent.borrow_mut();
+        while recent.front().is_some_and(|t| t.elapsed() > Duration::from_secs(60)) {
+            recent.pop_front();
+        }
+        if self.in_flight.get() >= MOST_IN_FLIGHT {
+            return Err(mlua::Error::runtime(format!("at most {MOST_IN_FLIGHT} requests at once")));
+        }
+        if recent.len() >= MOST_A_MINUTE {
+            return Err(mlua::Error::runtime(format!("at most {MOST_A_MINUTE} requests a minute")));
+        }
+        recent.push_back(Instant::now());
+        self.in_flight.set(self.in_flight.get() + 1);
+        Ok(())
+    }
+
+    /// Fetch a picture from one of its sites, once; the key it'll be known by.
+    pub fn web_picture(&self, url: &str) -> mlua::Result<String> {
+        self.may_reach(url)?;
+        use sha2::Digest;
+        let hash = sha2::Sha256::digest(url.as_bytes());
+        let key = format!("web:{}", hash.iter().take(12).map(|b| format!("{b:02x}")).collect::<String>());
+        if self.images.borrow_mut().insert(key.clone()) {
+            let (done, url, key, plugin) = (self.done.clone(), url.to_string(), key.clone(), self.id.clone());
+            std::thread::spawn(move || {
+                let picture = super::net::picture(&url);
+                let _ = done.send(super::host::Input::Picture { plugin, key, picture });
+            });
+        }
+        Ok(key)
+    }
 }
 
 impl Ctx {
@@ -208,7 +271,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
     });
     mace.set("me", to_lua(lua, &me_json)?)?;
 
-    for registry in ["mace_handlers", "mace_timers", "mace_keys", "mace_old_keys", "mace_modules"] {
+    for registry in ["mace_handlers", "mace_timers", "mace_keys", "mace_old_keys", "mace_modules", "mace_http"] {
         lua.set_named_registry_value(registry, lua.create_table()?)?;
     }
 
@@ -429,6 +492,85 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
     })?)?;
     bar.set_readonly(true);
     mace.set("bar", bar)?;
+
+    // --- the web: only the plugin's sites, and the answer comes later, to a callback
+    let http = lua.create_table()?;
+    let start = |lua: &Lua, request: super::net::Request, callback: Function| -> mlua::Result<()> {
+        let c = ctx(lua)?;
+        c.may_reach(&request.url)?;
+        c.may_request()?;
+        let id = c.next();
+        lua.named_registry_value::<Table>("mace_http")?.set(id, callback)?;
+        let (done, plugin) = (c.done.clone(), c.id.clone());
+        std::thread::spawn(move || {
+            let response = super::net::fetch(&request);
+            let _ = done.send(super::host::Input::Http { plugin, id, response });
+        });
+        Ok(())
+    };
+    http.set("get", lua.create_function(move |lua, (url, callback): (String, Function)| {
+        start(lua, super::net::Request { url, method: "GET".into(), headers: Vec::new(), body: None }, callback)
+    })?)?;
+    http.set("request", lua.create_function(move |lua, (options, callback): (Table, Function)| {
+        let url: String = options.get("url")?;
+        let method = options.get::<Option<String>>("method")?.unwrap_or_else(|| "GET".into()).to_ascii_uppercase();
+        if !["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].contains(&method.as_str()) {
+            return Err(mlua::Error::runtime(format!("no method {method}")));
+        }
+        let mut headers = Vec::new();
+        if let Some(table) = options.get::<Option<Table>>("headers")? {
+            for pair in table.pairs::<String, String>() {
+                headers.push(pair?);
+            }
+        }
+        let body = options.get::<Option<String>>("body")?;
+        start(lua, super::net::Request { url, method, headers, body }, callback)
+    })?)?;
+    http.set_readonly(true);
+    mace.set("http", http)?;
+
+    let json_table = lua.create_table()?;
+    json_table.set("encode", lua.create_function(|lua, value: LuaValue| {
+        let value: Value = lua.from_value(value)?;
+        serde_json::to_string(&value).map_err(|e| mlua::Error::runtime(e.to_string()))
+    })?)?;
+    json_table.set("decode", lua.create_function(|lua, text: String| {
+        let value: Value = serde_json::from_str(&text).map_err(|e| mlua::Error::runtime(format!("not JSON: {e}")))?;
+        to_lua(lua, &value)
+    })?)?;
+    json_table.set_readonly(true);
+    mace.set("json", json_table)?;
+
+    // --- what's playing (MPRIS)
+    let media = lua.create_table()?;
+    media.set("current", lua.create_function(|lua, player: Option<String>| {
+        let c = ctx(lua)?;
+        c.need("media")?;
+        match c.waiting(|| super::media::current(player.as_deref())) {
+            Some(now) => to_lua(lua, &now),
+            None => Ok(LuaValue::Nil),
+        }
+    })?)?;
+    media.set("players", lua.create_function(|lua, ()| {
+        let c = ctx(lua)?;
+        c.need("media")?;
+        Ok(c.waiting(super::media::players))
+    })?)?;
+    for (name, action) in [("playPause", "PlayPause"), ("play", "Play"), ("pause", "Pause"), ("next", "Next"),
+                           ("previous", "Previous")] {
+        media.set(name, lua.create_function(move |lua, player: Option<String>| {
+            let c = ctx(lua)?;
+            c.need("media")?;
+            Ok(c.waiting(|| super::media::control(player.as_deref(), action, None)))
+        })?)?;
+    }
+    media.set("seek", lua.create_function(|lua, (seconds, player): (f64, Option<String>)| {
+        let c = ctx(lua)?;
+        c.need("media")?;
+        Ok(c.waiting(|| super::media::control(player.as_deref(), "seek", Some(seconds))))
+    })?)?;
+    media.set_readonly(true);
+    mace.set("media", media)?;
 
     mace.set("refresh", lua.create_function(|lua, ()| {
         ctx(lua)?.dirty.set(true);

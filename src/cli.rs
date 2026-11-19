@@ -522,6 +522,13 @@ fn cmd_plugins(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
                 for words in plugins::describe_permissions(&manifest) {
                     writeln!(out, "  it may: {words}")?;
                 }
+                if !manifest.http.is_empty() {
+                    writeln!(out, "  warning: it can reach the internet, at:")?;
+                    for site in plugins::describe_sites(&manifest) {
+                        writeln!(out, "    {site}")?;
+                    }
+                    writeln!(out, "  those sites see your IP address and whatever the plugin sends them")?;
+                }
             } else {
                 writeln!(out, "{} is off", manifest.name)?;
             }

@@ -250,6 +250,19 @@ fn choice(value: Option<&Value>, allowed: &[&str], default: &str) -> String {
     }
 }
 
+/// A turned-on plugin's entry: `true`, or `{"http": [sites agreed to]}`.
+fn clean_plugin(value: &Value) -> Option<Value> {
+    match value {
+        Value::Bool(true) => Some(Value::Bool(true)),
+        Value::Object(map) => {
+            let sites: Vec<Value> = map.get("http").and_then(Value::as_array).into_iter().flatten()
+                .filter_map(Value::as_str).map(|s| Value::String(s.to_string())).collect();
+            Some(serde_json::json!({ "http": sites }))
+        }
+        _ => None,
+    }
+}
+
 impl Settings {
     /// Settings from any JSON value, every field checked.
     pub fn from_value(value: &Value) -> Settings {
@@ -293,8 +306,7 @@ impl Settings {
             discord_join: truthy(get("discord_join"), d.discord_join),
             overlay_key: text(get("overlay_key")).trim().to_string(),
             plugins: match get("plugins") {
-                Some(Value::Object(map)) => map.iter().filter(|(_, on)| on.as_bool() == Some(true))
-                    .map(|(id, _)| (id.clone(), Value::Bool(true))).collect(),
+                Some(Value::Object(map)) => map.iter().filter_map(|(id, on)| clean_plugin(on).map(|v| (id.clone(), v))).collect(),
                 _ => Map::new(),
             },
             accounts,

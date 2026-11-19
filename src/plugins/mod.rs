@@ -9,6 +9,8 @@
 
 pub mod api;
 pub mod host;
+pub mod media;
+pub mod net;
 pub mod protocol;
 pub mod ui;
 
@@ -24,7 +26,8 @@ pub const API: u32 = 1;
 
 /// What a plugin may be allowed beyond the basics (toasts, its own storage,
 /// timers, its bar button, and this account's game).
-pub const PERMISSIONS: [(&str, &str); 3] = [
+pub const PERMISSIONS: [(&str, &str); 4] = [
+    ("media", "See and control the music or video playing (Spotify, browsers)"),
     ("join", "Send this account to other servers"),
     ("accounts", "See your other accounts, and start, stop or gather them"),
     ("clipboard", "Copy text"),
@@ -53,6 +56,9 @@ pub struct Manifest {
     pub main: String,
     #[serde(default)]
     pub permissions: Vec<String>,
+    /// The sites it may reach (`mace.http`, pictures from the web).
+    #[serde(default)]
+    pub http: Vec<String>,
 }
 
 fn default_main() -> String {
@@ -94,6 +100,9 @@ pub fn read_manifest(dir: &Path) -> Result<Manifest, String> {
     if let Some(unknown) = manifest.permissions.iter().find(|p| !PERMISSIONS.iter().any(|(k, _)| k == p)) {
         return Err(format!("Unknown permission \"{unknown}\""));
     }
+    if let Some(bad) = manifest.http.iter().find(|s| !valid_site(s)) {
+        return Err(format!("\"{bad}\" isn't a site (like lrclib.net, or *.scdn.co for all under it)"));
+    }
     let main = Path::new(&manifest.main);
     if main.is_absolute() || main.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
         return Err("main must be a file in the plugin's folder".into());
@@ -120,23 +129,61 @@ pub fn list() -> Vec<Found> {
     found
 }
 
-pub fn is_on(id: &str) -> bool {
-    settings::load().plugins.get(id).and_then(Value::as_bool) == Some(true)
+/// Whether a plugin is turned on (its entry in settings: `true`, or the sites agreed to).
+pub fn entry_is_on(entry: Option<&Value>) -> bool {
+    matches!(entry, Some(Value::Bool(true)) | Some(Value::Object(_)))
 }
 
+pub fn is_on(id: &str) -> bool {
+    entry_is_on(settings::load().plugins.get(id))
+}
+
+/// The sites the user agreed the plugin may reach, when they turned it on.
+pub fn agreed_sites(entry: Option<&Value>) -> Vec<String> {
+    entry.and_then(|e| e.get("http")).and_then(Value::as_array).into_iter().flatten()
+        .filter_map(Value::as_str).map(String::from).collect()
+}
+
+/// Turn a plugin on (agreeing to the sites its manifest names) or off.
 pub fn set_on(id: &str, on: bool) -> anyhow::Result<()> {
     let mut s = settings::load();
     if on {
-        s.plugins.insert(id.to_string(), Value::Bool(true));
+        let sites = read_manifest(&dir().join(id)).map(|m| m.http).unwrap_or_default();
+        s.plugins.insert(id.to_string(), serde_json::json!({ "http": sites }));
     } else {
         s.plugins.remove(id);
     }
     settings::save(&s)
 }
 
+/// A site in a manifest: a host name (`lrclib.net`), or every host under one (`*.scdn.co`).
+fn valid_site(site: &str) -> bool {
+    let host = site.strip_prefix("*.").unwrap_or(site);
+    host.contains('.') && host.len() <= 253 && !host.starts_with('.') && !host.ends_with('.')
+        && host.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
+}
+
+/// Whether `host` is one of `sites`.
+pub fn site_allowed(sites: &[String], host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    sites.iter().any(|site| match site.strip_prefix("*.") {
+        Some(domain) => host.len() > domain.len() + 1 && host.ends_with(domain)
+            && host.as_bytes()[host.len() - domain.len() - 1] == b'.',
+        None => *site == host,
+    })
+}
+
 /// The plain words for a plugin's permissions, for asking before turning it on.
 pub fn describe_permissions(manifest: &Manifest) -> Vec<&'static str> {
     manifest.permissions.iter().filter_map(|p| PERMISSIONS.iter().find(|(k, _)| k == p).map(|(_, words)| *words)).collect()
+}
+
+/// The sites a plugin may reach, one line each, for asking before turning it on.
+pub fn describe_sites(manifest: &Manifest) -> Vec<String> {
+    manifest.http.iter().map(|site| match site.strip_prefix("*.") {
+        Some(domain) => format!("• {domain}, every site under it"),
+        None => format!("• {site}"),
+    }).collect()
 }
 
 /// `mace plugins new ID`: a plugin that works, to start from.

@@ -34,7 +34,21 @@ struct Loaded {
     id: String,
     lua: Lua,
     stamp: SystemTime,
+    /// The sites it was loaded able to reach.
+    sites: Vec<String>,
 }
+
+/// What reaches the host: the supervisor's messages, and work other threads finished.
+pub enum Input {
+    Message(ToHost),
+    /// The supervisor is gone.
+    Ended,
+    Http { plugin: String, id: u64, response: Value },
+    Picture { plugin: String, key: String, picture: Option<(u32, Vec<u8>)> },
+}
+
+/// How often what's playing is looked at, for the `media` event.
+const MEDIA_EVERY: Duration = Duration::from_millis(500);
 
 pub struct Host {
     me: String,
@@ -46,6 +60,11 @@ pub struct Host {
     scanned: Option<Instant>,
     sent_buttons: Option<Vec<PluginButton>>,
     complained: HashMap<String, Instant>,
+    tx: mpsc::Sender<Input>,
+    rx: mpsc::Receiver<Input>,
+    /// What was playing when last looked (player, track, playing), and when that was.
+    media_seen: Option<Value>,
+    media_looked: Option<Instant>,
 }
 
 /// The newest change to any file in a plugin's folder (a few levels down).
@@ -94,12 +113,120 @@ fn call(lua: &Lua, f: &Function, args: impl IntoLuaMulti) -> mlua::Result<()> {
 
 impl Host {
     pub fn new(me: &str) -> Host {
+        let (tx, rx) = mpsc::channel();
         Host { me: me.to_string(), world: Rc::new(RefCell::new(None)), out: Rc::new(RefCell::new(Vec::new())),
-               plugins: Vec::new(), failed: HashMap::new(), scanned: None, sent_buttons: None, complained: HashMap::new() }
+               plugins: Vec::new(), failed: HashMap::new(), scanned: None, sent_buttons: None, complained: HashMap::new(),
+               tx, rx, media_seen: None, media_looked: None }
     }
 
     fn log(&self, text: String) {
         self.out.borrow_mut().push(FromHost::Log { text });
+    }
+
+    /// Where the supervisor's messages go in (`serve` reads them on a thread of its own).
+    pub fn sender(&self) -> mpsc::Sender<Input> {
+        self.tx.clone()
+    }
+
+    /// Wait for something to come in, at most `wait`; false once the supervisor is gone.
+    pub fn wait(&mut self, wait: Duration) -> bool {
+        match self.rx.recv_timeout(wait) {
+            Ok(input) => {
+                if !self.take(input) {
+                    return false;
+                }
+                // whatever else came meanwhile, before drawing
+                while let Ok(input) = self.rx.try_recv() {
+                    if !self.take(input) {
+                        return false;
+                    }
+                }
+                true
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => true,
+            Err(mpsc::RecvTimeoutError::Disconnected) => false,
+        }
+    }
+
+    /// Hand over what other threads finished (tests: without waiting).
+    pub fn pump(&mut self) {
+        while let Ok(input) = self.rx.try_recv() {
+            self.take(input);
+        }
+    }
+
+    fn take(&mut self, input: Input) -> bool {
+        match input {
+            Input::Message(message) => self.handle(message),
+            Input::Ended => return false,
+            Input::Http { plugin, id, response } => {
+                let Some(i) = self.plugins.iter().position(|p| p.id == plugin) else { return true };
+                let lua = self.plugins[i].lua.clone();
+                if let Ok(c) = ctx(&lua) {
+                    c.in_flight.set(c.in_flight.get().saturating_sub(1));
+                    // what it does with the answer likely changes its menu
+                    c.dirty.set(true);
+                }
+                let Ok(callbacks) = lua.named_registry_value::<Table>("mace_http") else { return true };
+                let Ok(Some(f)) = callbacks.get::<Option<Function>>(id) else { return true };
+                let _ = callbacks.set(id, LuaValue::Nil);
+                let arg = api::to_lua(&lua, &response).unwrap_or(LuaValue::Nil);
+                if let Err(error) = call(&lua, &f, arg) {
+                    self.fail(i, "a request's answer", &error);
+                }
+            }
+            Input::Picture { plugin, key, picture } => {
+                let Some(i) = self.plugins.iter().position(|p| p.id == plugin) else { return true };
+                match picture {
+                    Some((size, rgba)) => {
+                        self.out.borrow_mut().push(FromHost::Image { key, size, rgba: mace_proto::base64(&rgba) });
+                    }
+                    // let a later draw ask again
+                    None => {
+                        if let Ok(c) = ctx(&self.plugins[i].lua) {
+                            c.images.borrow_mut().remove(&key);
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// The `media` event, for plugins that may see what's playing, when it changed.
+    pub fn watch_media(&mut self) {
+        let listening: Vec<usize> = (0..self.plugins.len()).filter(|&i| {
+            let lua = &self.plugins[i].lua;
+            ctx(lua).is_ok_and(|c| c.permissions.iter().any(|p| p == "media"))
+                && lua.named_registry_value::<Table>("mace_handlers")
+                    .and_then(|h| h.get::<Option<Table>>("media")).is_ok_and(|h| h.is_some())
+        }).collect();
+        if listening.is_empty() || self.media_looked.is_some_and(|t| t.elapsed() < MEDIA_EVERY) {
+            return;
+        }
+        self.media_looked = Some(Instant::now());
+        let now = super::media::current(None);
+        let seen = now.as_ref().map(|n| serde_json::json!([n["player"], n["title"], n["artist"], n["album"], n["playing"]]));
+        if seen == self.media_seen {
+            return;
+        }
+        self.media_seen = seen;
+        let data = now.unwrap_or(Value::Null);
+        for i in listening {
+            self.call_handlers(i, "media", &data);
+        }
+    }
+
+    fn call_handlers(&mut self, i: usize, name: &str, data: &Value) {
+        let lua = self.plugins[i].lua.clone();
+        let handlers = lua.named_registry_value::<Table>("mace_handlers").and_then(|h| h.get::<Option<Table>>(name));
+        let Ok(Some(handlers)) = handlers else { return };
+        let arg = api::to_lua(&lua, data).unwrap_or(LuaValue::Nil);
+        for handler in handlers.sequence_values::<Function>().flatten() {
+            if let Err(error) = call(&lua, &handler, arg.clone()) {
+                self.fail(i, &format!("on \"{name}\""), &error);
+            }
+        }
     }
 
     fn complain(&mut self, id: &str, name: &str, what: &str, error: &mlua::Error) {
@@ -111,7 +238,7 @@ impl Host {
         }
     }
 
-    fn load(&mut self, id: &str, dir: &Path, manifest: &Manifest) -> Result<Loaded, mlua::Error> {
+    fn load(&mut self, id: &str, dir: &Path, manifest: &Manifest, sites: Vec<String>) -> Result<Loaded, mlua::Error> {
         let lua = Lua::new();
         lua.set_memory_limit(MEMORY_LIMIT)?;
         lua.set_app_data(Ctx {
@@ -130,6 +257,12 @@ impl Host {
             dirty: Cell::new(false),
             deadline: Cell::new(None),
             images: RefCell::new(Default::default()),
+            sites: sites.clone(),
+            wanted: manifest.http.clone(),
+            done: self.tx.clone(),
+            in_flight: Cell::new(0),
+            recent: RefCell::new(Default::default()),
+            last_menu: RefCell::new(None),
         });
         lua.set_interrupt(|lua| {
             if let Some(c) = lua.app_data_ref::<Ctx>()
@@ -144,7 +277,7 @@ impl Host {
         let source = std::fs::read_to_string(dir.join(&manifest.main))
             .map_err(|e| mlua::Error::runtime(format!("{}: {e}", manifest.main)))?;
         guarded(&lua, LOAD_LIMIT, || lua.load(source).set_name(format!("@{}", manifest.main)).exec())?;
-        Ok(Loaded { id: id.to_string(), lua, stamp: stamp(dir) })
+        Ok(Loaded { id: id.to_string(), lua, stamp: stamp(dir), sites })
     }
 
     /// Load what's turned on and changed, drop what's off or gone.
@@ -154,8 +287,7 @@ impl Host {
         }
         self.scanned = Some(Instant::now());
         let on = crate::settings::load().plugins;
-        let wanted: Vec<Found> = super::list().into_iter().filter(|f| on.get(&f.id).and_then(Value::as_bool) == Some(true))
-            .collect();
+        let wanted: Vec<Found> = super::list().into_iter().filter(|f| super::entry_is_on(on.get(&f.id))).collect();
         let before = self.plugins.len();
         self.plugins.retain(|p| wanted.iter().any(|f| f.id == p.id && f.manifest.is_ok()));
         if self.plugins.len() != before {
@@ -164,16 +296,20 @@ impl Host {
         for found in wanted {
             let now = stamp(&found.dir);
             let loaded = self.plugins.iter().position(|p| p.id == found.id);
-            if loaded.is_some_and(|i| self.plugins[i].stamp == now) || self.failed.get(&found.id) == Some(&now) {
+            let Ok(manifest) = &found.manifest else { continue };
+            // the sites it may reach: named in plugin.json and agreed to when turned on
+            let agreed = super::agreed_sites(on.get(&found.id));
+            let sites: Vec<String> = manifest.http.iter().filter(|s| agreed.contains(s)).cloned().collect();
+            let same = loaded.is_some_and(|i| self.plugins[i].stamp == now && self.plugins[i].sites == sites);
+            if same || (loaded.is_none() && self.failed.get(&found.id) == Some(&now)) {
                 continue;
             }
-            let Ok(manifest) = &found.manifest else { continue };
             // a reload keeps the menu open if it was
             let was_open = loaded.is_some_and(|i| ctx(&self.plugins[i].lua).is_ok_and(|c| c.menu_open.get()));
             if let Some(i) = loaded {
                 self.plugins.remove(i);
             }
-            match self.load(&found.id, &found.dir, manifest) {
+            match self.load(&found.id, &found.dir, manifest, sites) {
                 Ok(plugin) => {
                     self.failed.remove(&found.id);
                     self.log(format!("plugin {}: {} {}", found.id, if loaded.is_some() { "reloaded" } else { "loaded" },
@@ -197,17 +333,12 @@ impl Host {
         match message {
             ToHost::State { state } => *self.world.borrow_mut() = Some(state),
             ToHost::Event { name, data } => {
+                // what's playing is only for plugins allowed to see it (it comes from watch_media)
+                if name == "media" {
+                    return;
+                }
                 for i in 0..self.plugins.len() {
-                    let lua = self.plugins[i].lua.clone();
-                    let handlers = lua.named_registry_value::<Table>("mace_handlers")
-                        .and_then(|h| h.get::<Option<Table>>(name.as_str()));
-                    let Ok(Some(handlers)) = handlers else { continue };
-                    let arg = api::to_lua(&lua, &data).unwrap_or(LuaValue::Nil);
-                    for handler in handlers.sequence_values::<Function>().flatten() {
-                        if let Err(error) = call(&lua, &handler, arg.clone()) {
-                            self.fail(i, &format!("on \"{name}\""), &error);
-                        }
-                    }
+                    self.call_handlers(i, &name, &data);
                 }
             }
             ToHost::Ui { plugin, button, key, what, value } => {
@@ -221,6 +352,8 @@ impl Host {
                     "open" => {
                         c.menu_open.set(true);
                         c.dirty.set(true);
+                        // a panel opening it (maybe a new one) gets it whether or not it changed
+                        c.last_menu.borrow_mut().take();
                     }
                     "close" => c.menu_open.set(false),
                     "click" | "change" | "submit" => {
@@ -293,7 +426,7 @@ impl Host {
     /// When the host next has something to do on its own.
     pub fn next_wake(&self) -> Duration {
         let now = Instant::now();
-        let mut wait = SCAN_EVERY;
+        let mut wait = SCAN_EVERY.min(MEDIA_EVERY);
         for p in &self.plugins {
             if let Ok(c) = ctx(&p.lua) {
                 for t in c.timers.borrow().iter() {
@@ -316,7 +449,16 @@ impl Host {
             drop(c);
             let Some(button) = button else { continue };
             match self.render(&lua) {
-                Ok(menu) => self.out.borrow_mut().push(FromHost::Menu { plugin: id, button, menu }),
+                Ok(menu) => {
+                    // often unchanged (a timer that redraws often): then not sent again
+                    let c = ctx(&lua);
+                    let fresh = c.as_ref().is_ok_and(|c| c.last_menu.borrow().as_ref() != Some(&menu));
+                    if fresh && let Ok(c) = c {
+                        *c.last_menu.borrow_mut() = Some(menu.clone());
+                        drop(c);
+                        self.out.borrow_mut().push(FromHost::Menu { plugin: id, button, menu });
+                    }
+                }
                 Err(error) => {
                     let menu = mace_proto::Menu { title: name.clone(), subtitle: None, children: vec![
                         mace_proto::Node::Text { text: format!("This menu failed: {}", brief(&error)), style: "subtle".into() },
@@ -369,37 +511,31 @@ impl Host {
 
 /// Serve the supervisor on `input` and `output` until `input` ends.
 pub fn serve(me: &str, input: impl BufRead + Send + 'static, mut output: impl Write) {
-    let (tx, rx) = mpsc::channel::<ToHost>();
+    let mut host = Host::new(me);
+    let tx = host.sender();
     std::thread::spawn(move || {
         for line in input.lines() {
             let Ok(line) = line else { break };
             if let Ok(message) = serde_json::from_str::<ToHost>(&line)
-                && tx.send(message).is_err()
+                && tx.send(Input::Message(message)).is_err()
             {
                 return;
             }
         }
+        let _ = tx.send(Input::Ended);
     });
-    let mut host = Host::new(me);
     loop {
         host.scan(false);
         host.run_timers();
+        host.watch_media();
         host.settle();
         for message in host.take_output() {
             if output.write_all(message.line().as_bytes()).and_then(|_| output.flush()).is_err() {
                 return;
             }
         }
-        match rx.recv_timeout(host.next_wake()) {
-            Ok(message) => {
-                host.handle(message);
-                // whatever else came meanwhile, before drawing
-                while let Ok(message) = rx.try_recv() {
-                    host.handle(message);
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        if !host.wait(host.next_wake()) {
+            return;
         }
     }
 }
@@ -652,5 +788,100 @@ mod tests {
         let out = ui(&mut host, "oops", "", "open", None);
         let menu = menu_of(&out);
         assert!(matches!(&menu.children[0], Node::Text { text, .. } if text.contains("no block \"chart\"")), "{menu:?}");
+    }
+
+    /// Run `script` as a click on a button "Go" of a plugin with these sites; the toasts it made.
+    fn click_go(host: &mut Host, id: &str) -> Vec<(String, String)> {
+        let go = key_of(&menu_of(&ui(host, id, "", "open", None)), "Go");
+        let mut out = ui(host, id, &go, "click", None);
+        // answers come from other threads
+        for _ in 0..100 {
+            host.pump();
+            host.settle();
+            out.extend(host.take_output());
+            if !toasts(&out).is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        toasts(&out)
+    }
+
+    fn web(id: &str, sites: &[&str], script: &str) {
+        let body = format!(r#"
+            mace.bar.button({{ id = "b", menu = function()
+                return mace.ui.menu({{}}, {{ mace.ui.button("Go", {{ onClick = function() {script} end }}) }})
+            end }})
+        "#);
+        write_plugin(id, json!({ "id": id, "name": id, "api": 1, "http": sites }), &body);
+        super::super::set_on(id, true).unwrap();
+    }
+
+    #[test]
+    fn the_web_only_the_sites_agreed_to() {
+        let _home = TempHome::new();
+        let answer = r#"function(r) mace.toast(tostring(r.status), r.body) end"#;
+        web("fine", &["mace.test"], &format!("mace.http.get(\"https://mace.test/x?q=1\", {answer})"));
+        web("other", &["mace.test"], &format!("mace.http.get(\"https://elsewhere.test/\", {answer})"));
+        web("plain", &["mace.test"], &format!("mace.http.get(\"http://mace.test/\", {answer})"));
+        web("post", &["*.mace.test"], &format!(
+            "mace.http.request({{ url = \"https://api.mace.test/p\", method = \"post\", body = \"x\" }}, {answer})"));
+        let mut host = host();
+        assert_eq!(click_go(&mut host, "fine"), [("200".to_string(), "GET https://mace.test/x?q=1".to_string())]);
+        assert!(click_go(&mut host, "other")[0].1.contains("isn't one of the plugin's sites"));
+        assert!(click_go(&mut host, "plain")[0].1.contains("only https"));
+        assert_eq!(click_go(&mut host, "post"), [("200".to_string(), "POST https://api.mace.test/p".to_string())]);
+        // a site added after it was turned on isn't agreed to
+        let dir = super::super::dir().join("fine");
+        std::fs::write(dir.join("plugin.json"), json!({ "id": "fine", "name": "fine", "api": 1,
+                                                        "http": ["mace.test", "more.test"] }).to_string()).unwrap();
+        std::fs::write(dir.join("init.luau"), r#"
+            mace.bar.button({ id = "b", menu = function()
+                return mace.ui.menu({}, { mace.ui.button("Go", { onClick = function()
+                    mace.http.get("https://more.test/", function() end)
+                end }) })
+            end })
+        "#).unwrap();
+        std::fs::File::options().write(true).open(dir.join("init.luau")).unwrap()
+            .set_modified(SystemTime::now() + Duration::from_secs(2)).unwrap();
+        host.scan(true);
+        assert!(click_go(&mut host, "fine")[0].1.contains("turn it off and on again"));
+        // turned on again: agreed
+        super::super::set_on("fine", false).unwrap();
+        super::super::set_on("fine", true).unwrap();
+        assert_eq!(crate::plugins::agreed_sites(crate::settings::load().plugins.get("fine")), ["mace.test", "more.test"]);
+    }
+
+    #[test]
+    fn json_progress_pictures_and_quiet_redraws() {
+        let _home = TempHome::new();
+        turned_on("bits", &[], r#"
+            local t = mace.json.decode('{"a": [1, 2], "b": null, "c": "x"}')
+            assert(t.a[2] == 2 and t.b == nil and t.c == "x")
+            assert(mace.json.decode(mace.json.encode({ n = 3 })).n == 3)
+            local ticks = 0
+            mace.every(0.1, function() ticks += 1 end)
+            mace.bar.button({ id = "b", menu = function()
+                return mace.ui.menu({}, {
+                    mace.ui.progress(30, 200, { rate = 1, times = true }),
+                    mace.ui.text("same every time"),
+                })
+            end })
+        "#);
+        let mut host = host();
+        assert!(toasts(&host.take_output()).is_empty());
+        let menu = menu_of(&ui(&mut host, "bits", "", "open", None));
+        assert_eq!(menu.children[0], Node::Progress { value: 30.0, max: 200.0, rate: 1.0, times: true });
+        // redrawn, but the same: nothing sent
+        host.handle(ToHost::Ui { plugin: "bits".into(), button: "b".into(), key: "k".into(), what: "click".into(), value: None });
+        if let Ok(c) = ctx(&host.plugins[0].lua) {
+            c.dirty.set(true);
+        }
+        host.settle();
+        assert!(!host.take_output().iter().any(|m| matches!(m, FromHost::Menu { .. })));
+        // timers every tenth of a second
+        std::thread::sleep(Duration::from_millis(150));
+        host.run_timers();
+        assert!(host.next_wake() <= Duration::from_millis(100));
     }
 }

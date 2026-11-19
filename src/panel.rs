@@ -294,7 +294,16 @@ fn config(me: &str) -> Config {
     // the game you used last keeps its full frame rate even while you're in another app
     let background_fps = if last_focused().as_deref() == Some(me) { 0 } else { s.background_fps.min(u32::MAX as u64) as u32 };
     Config { me: me.to_string(), key: parse_key(&s.overlay_key).unwrap_or_default(), theme: theme(),
-             can_focus: *processes::HYPRLAND, blur: s.panel_blur, background_fps, anti_afk: s.anti_afk }
+             can_focus: *processes::HYPRLAND, blur: s.panel_blur, background_fps, anti_afk: s.anti_afk, pins: pins() }
+}
+
+/// What's pinned in the panel, the same for every game.
+fn pins_file() -> PathBuf {
+    paths::config().join("pins.json")
+}
+
+fn pins() -> Vec<mace_proto::Pin> {
+    fsutil::read_json(&pins_file()).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
 }
 
 /// Recent games the in-game bar lists.
@@ -818,7 +827,7 @@ fn connection(stream: UnixStream, shared: Arc<Shared>) {
         let (writer, open, me) = (writer.clone(), open.clone(), me.clone());
         move || {
             std::thread::spawn(move || {
-                let files = [paths::settings_file(), paths::config().join("theme.json"), focused_file()];
+                let files = [paths::settings_file(), paths::config().join("theme.json"), focused_file(), pins_file()];
                 let mut seen: Vec<Option<SystemTime>> = Vec::new();
                 while open.load(Ordering::Relaxed) {
                     let now: Vec<_> = files.iter().map(|f| modified(f)).collect();
@@ -886,6 +895,12 @@ fn connection(stream: UnixStream, shared: Arc<Shared>) {
                     shared.state_to_host();
                 }
                 shared.to_host(&ToHost::Ui { plugin, button, key, what, value });
+            }
+            ToMace::Pins { pins } => {
+                // every game's panel picks it up from the file, this one included
+                if let Ok(text) = serde_json::to_vec(&pins) {
+                    let _ = fsutil::write_atomic(&pins_file(), &text);
+                }
             }
             ToMace::Toggle => {
                 shared.to_panels(&ToPanel::Toggle);

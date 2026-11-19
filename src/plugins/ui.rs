@@ -47,6 +47,14 @@ end
 function ui.space(size)
     return { type = "space", size = size }
 end
+function ui.progress(value, max, o)
+    o = options(o)
+    return { type = "progress", value = value, max = max, rate = o.rate, times = o.times == true }
+end
+function ui.image(image, o)
+    o = options(o)
+    return { type = "image", image = image, size = o.size }
+end
 return ui
 "#;
 
@@ -73,6 +81,10 @@ pub fn icon(_lua: &Lua, ctx: &Ctx, name: &str) -> mlua::Result<String> {
 
 /// A PNG in the plugin's folder, sent to the panel once, as the key it's known by.
 fn picture(ctx: &Ctx, file: &str) -> mlua::Result<String> {
+    // or one from the plugin's sites
+    if file.starts_with("https://") {
+        return ctx.web_picture(file);
+    }
     let key = format!("plugin:{}/{file}", ctx.id);
     if ctx.images.borrow().contains(&key) {
         return Ok(key);
@@ -179,6 +191,16 @@ fn node(lua: &Lua, value: LuaValue, keys: &mut Keys, depth: usize) -> mlua::Resu
             children: children(lua, &t, keys, depth)?,
         },
         "space" => Node::Space { size: style(&t, "size")? },
+        "progress" => Node::Progress {
+            value: t.get::<Option<f64>>("value")?.unwrap_or(0.0),
+            max: t.get::<Option<f64>>("max")?.unwrap_or(1.0),
+            rate: t.get::<Option<f64>>("rate")?.unwrap_or(0.0),
+            times: t.get::<Option<bool>>("times")?.unwrap_or(false),
+        },
+        "image" => Node::Image {
+            image: picture(keys.ctx, &text(&t, "image")?.unwrap_or_default())?,
+            size: style(&t, "size")?,
+        },
         "menu" => return Err(bad("ui.menu goes around a menu, not inside one")),
         "" => return Err(bad("a menu's blocks come from mace.ui (this table has no type)")),
         other => return Err(bad(format!("no block \"{other}\" in mace.ui"))),

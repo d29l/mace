@@ -52,7 +52,8 @@ plugins/hello/
   "author": "you",
   "description": "What it does, in a few words",
   "main": "init.luau",
-  "permissions": []
+  "permissions": [],
+  "http": []
 }
 ```
 
@@ -61,9 +62,12 @@ plugins/hello/
   plugin made for another API isn't loaded, and Mace Settings says why.
 - `main` is the script Mace runs (`init.luau` if left out).
 - `permissions`: see below.
+- `http`: the sites it may reach (see [The web](#the-web)), like
+  `"lrclib.net"`, or `"*.scdn.co"` for every site under scdn.co.
 
 Plugins are off until you turn them on, in Mace Settings → Plugins or with
-`mace plugins on ID`. Mace asks first, saying what the plugin may do.
+`mace plugins on ID`. Mace asks first, saying what the plugin may do, and
+warns when it can reach the internet, naming the sites.
 
 A plugin runs once for each game window: with two accounts playing, each has
 its own copy of it, and `mace.me` says which account it's with.
@@ -83,9 +87,11 @@ Anything more needs a permission in `plugin.json`:
 | `join`      | `mace.join`, `mace.rejoin`, `mace.hop`                   |
 | `accounts`  | `mace.accounts`, `mace.start`, `mace.stop`, `mace.gather`|
 | `clipboard` | `mace.copy`                                              |
+| `media`     | `mace.media` and the `media` event                       |
 
 Calling one of these without its permission is an error that names the
-permission it needs.
+permission it needs. The web needs no permission, only the sites listed in
+`http`.
 
 ## The `mace` table
 
@@ -165,7 +171,13 @@ The bar has room for 4 plugin buttons, beside Mace's own.
 
 - `mace.bar.close()` closes the bar, as Mace does after a join.
 - `mace.refresh()` draws the open menu again (after a timer changed something).
-  Mace already redraws it after any of its controls is used.
+  Mace already redraws it after any of its controls is used, and after a
+  request's answer comes. A redraw that comes out the same isn't sent to the
+  game, so refreshing often is cheap.
+
+Players can pin a menu (the pin in its corner): it then stays on screen
+while they play, where they dragged it, and your menu function keeps being
+called as if it were open. Keep pinnable menus small.
 
 ### Timers
 
@@ -175,7 +187,62 @@ local ticker = mace.every(60, function() mace.toast("Another minute") end)
 ticker:cancel()
 ```
 
-`mace.every` runs at most once a second.
+`mace.every` runs at most ten times a second (every 0.1 s).
+
+### The web
+
+```lua
+mace.http.get("https://lrclib.net/api/search?q=hello", function(response)
+    if response.ok then
+        local results = mace.json.decode(response.body)
+        mace.toast(`{#results} results`)
+    else
+        print(response.status, response.error)
+    end
+end)
+
+mace.http.request({
+    url = "https://example.com/api",
+    method = "POST",                                -- GET, POST, PUT, PATCH, DELETE or HEAD
+    headers = { ["Content-Type"] = "application/json" },
+    body = mace.json.encode({ hello = true }),
+}, function(response) … end)
+```
+
+The answer comes later, to the function: the game never waits on the
+network. It's `{ ok, status, body, headers }`, or `{ ok = false, error }`
+when there was no answer.
+
+- Only `https://`, and only the sites in the plugin's `http`. Mace asks the
+  player before letting a plugin with sites run. A site added to
+  `plugin.json` later works once they've turned the plugin off and on again.
+- Redirects aren't followed (they could lead anywhere).
+- At most 6 requests at once and 120 a minute; answers up to 2 MB; 10 s each.
+
+`mace.json.encode(value)` and `mace.json.decode(text)` turn tables into JSON
+text and back (JSON's `null` is `nil`).
+
+### Media
+
+With the `media` permission, a plugin sees what's playing on the desktop
+(Spotify, a browser, any player with media keys) and controls it:
+
+```lua
+local now = mace.media.current() -- nil when nothing plays
+-- { player = "spotify", title, artist, album, art = "https://…", length = 215.3,
+--   position = 31.2, playing = true, status = "Playing" }
+
+mace.media.playPause()
+mace.media.next()
+mace.media.previous()
+mace.media.seek(60)        -- to one minute in
+mace.media.players()       -- { "spotify", "brave.instance2453" }
+```
+
+`length` and `position` are in seconds. Each function takes a player's name
+last, to pick one (`mace.media.current("spotify")`); without it, the one
+playing is used. The `media` event comes when the song changes or it's paused
+or played, with `current()` (or `nil` when the player went away).
 
 ### Printing
 
@@ -197,6 +264,7 @@ end)
 | `opened`  | the bar opened                        | |
 | `closed`  | the bar closed                        | |
 | `focused` | the game window got the keyboard      | |
+| `media`   | the song changed, or was paused or played (`media` permission) | `mace.media.current()` |
 
 ## Menus: `mace.ui`
 
@@ -225,10 +293,21 @@ ui.menu({ title = "Title", subtitle = "a line under it" }, {
     ui.input({ placeholder = "Type here", value = "", onSubmit = function(text) … end }), -- Enter submits
     ui.stack({ ui.button("A"), ui.button("B") }, { direction = "row", gap = "small" }),  -- "row" or "column"; "small" or "medium"
     ui.space("medium"),                              -- "small" or "medium"
+    ui.progress(31, 215, { rate = 1, times = true }), -- see below
+    ui.image("https://i.scdn.co/image/…", { size = "medium" }), -- "small", "medium" or "large"
 })
 ```
 
 A plain string in a list is the same as `ui.text(string)`.
+
+`ui.progress(value, max, { rate, times })` is a bar from 0 to `max`, at
+`value` when drawn. It moves on by `rate` a second by itself, smoothly, so a
+song's progress needs no redrawing: `rate = 1` while it plays, `0` when it's
+paused. With `times = true` it shows `0:31` and `3:35` under it.
+
+`ui.image(picture)` and a row's `image` are a PNG in the plugin's folder, or
+an `https://` picture from one of its sites (any common format; drawn square,
+cropped to its middle).
 
 The menu is drawn when it opens, and again after each control is used, so
 read your state inside the menu function and it stays current. A menu has at
@@ -239,12 +318,13 @@ most 300 blocks.
 Icons are named like [Material Symbols](https://fonts.google.com/icons) and
 drawn rounded and filled, like the bar's own:
 
-`add` `bolt` `bookmark` `bug_report` `chat` `check` `close` `content_copy`
-`delete` `edit` `emoji_events` `explore` `extension` `favorite` `flag`
-`games-recent` `group` `history` `home` `info` `link` `lock` `map`
-`music_note` `notifications` `pause` `person` `play_arrow` `public` `refresh`
-`rocket_launch` `schedule` `search` `select_window` `settings` `shield`
-`shuffle` `skip_next` `sports_esports` `star` `sticky_note_2` `storage`
+`add` `album` `bolt` `bookmark` `bug_report` `chat` `check` `close`
+`content_copy` `delete` `edit` `emoji_events` `explore` `extension`
+`favorite` `flag` `games-recent` `group` `history` `home` `info` `link`
+`lock` `lyrics` `map` `music_note` `notifications` `pause` `person`
+`play_arrow` `public` `push_pin` `refresh` `rocket_launch` `schedule`
+`search` `select_window` `settings` `shield` `shuffle` `skip_next`
+`skip_previous` `sports_esports` `star` `sticky_note_2` `storage`
 `swap_horiz` `sync` `timer` `visibility` `volume_off` `volume_up`
 
 Or a PNG in the plugin's folder: `icon = "icon.png"`. As an icon only its
@@ -268,7 +348,7 @@ restarts and reinstalls. It holds up to 1 MB.
 
 - A call into your plugin (an event, a timer, a click, a menu) may take 0.2 s
   of work; loading it, 1 s. Past that it's stopped with an error. Waiting on
-  Roblox in `mace.servers` and `mace.hop` doesn't count.
+  Roblox in `mace.servers` and `mace.hop`, or on `mace.media`, doesn't count.
 - A plugin's memory is capped at 32 MB.
 - An error shows as a toast ("Hello plugin failed: …", at most once a
   minute) and in full in the account's log. The plugin keeps running. One

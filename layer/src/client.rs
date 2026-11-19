@@ -32,7 +32,7 @@ pub struct Data {
     /// The plugins' bar buttons.
     pub plugins: Vec<PluginButton>,
     /// Each plugin drop-down's menu, by (plugin, button), as last sent.
-    pub menus: HashMap<(String, String), Arc<Menu>>,
+    pub menus: HashMap<(String, String), (Arc<Menu>, std::time::Instant)>,
     /// Text plugins asked to copy, not yet taken by the UI.
     pub copies: Vec<String>,
     /// A plugin asked for the panel to close.
@@ -89,6 +89,7 @@ fn receive(message: ToPanel) {
         ToPanel::Config(config) => {
             panel::INPUT.set_hotkey(config.key);
             pace::configure(config.background_fps, config.anti_afk);
+            panel::set_pinned(!config.pins.is_empty());
             with(|d| d.config = Some(config));
         }
         ToPanel::State(state) => with(|d| d.state = Some(Arc::new(state))),
@@ -123,7 +124,7 @@ fn receive(message: ToPanel) {
             d.plugins = buttons;
         }),
         ToPanel::PluginMenu { plugin, button, menu } => with(|d| {
-            d.menus.insert((plugin, button), Arc::new(menu));
+            d.menus.insert((plugin, button), (Arc::new(menu), std::time::Instant::now()));
         }),
         ToPanel::Copy { text } => with(|d| {
             if d.copies.len() < 4 {

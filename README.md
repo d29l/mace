@@ -24,7 +24,8 @@ prefix, so you can play on several of them at the same time.
 - Each account gets the Roblox version it needs, so the updater doesn't get in the way
 - Join another account's server, or bring every account to yours
 - An in-game bar, drawn inside the game, for your server, the server list
-  and alts, on any desktop
+  and alts, on any desktop. Pin the bar or any of its menus to keep them on
+  screen while you play
 - Accounts you aren't using run at a lower frame rate
 - Anti-AFK, to keep idle accounts from being kicked. It's off by default: it
   sends input to the game, which may break Roblox's rules

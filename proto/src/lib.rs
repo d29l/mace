@@ -26,6 +26,8 @@ pub enum ToMace {
     /// From another `mace` process: show this in the game. Answered with
     /// `Done { id: 0, ok }`, ok when a panel was there to show it.
     Toast { title: String, body: String },
+    /// What's pinned now, and where: Mace keeps it for every game.
+    Pins { pins: Vec<Pin> },
     /// Something done to a plugin's menu: `open` and `close` (the drop-down
     /// of the plugin's `button`), `click`, `change` (a toggle: `value` is the
     /// new bool) and `submit` (an input: `value` is the text), for the control
@@ -85,6 +87,20 @@ pub struct Config {
     /// Nudge the game when it has been idle a while, so Roblox doesn't kick it.
     #[serde(default)]
     pub anti_afk: bool,
+    /// What stays on screen while the panel is closed, and where (the same in every game).
+    #[serde(default)]
+    pub pins: Vec<Pin>,
+}
+
+/// Something pinned: `bar`, `servers`, `alts`, `games`, or a plugin's menu
+/// (`plugin:PLUGIN/BUTTON`), with its top left corner in points (the bar's is unused).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Pin {
+    pub id: String,
+    #[serde(default)]
+    pub x: f32,
+    #[serde(default)]
+    pub y: f32,
 }
 
 /// A key and its modifiers, by physical position (SDL scancodes).
@@ -215,13 +231,13 @@ pub struct PublicServer {
 
 /// The icons a plugin can name: Material Symbols' names, drawn rounded and
 /// filled like the bar's own.
-pub const ICONS: [&str; 48] = [
-    "add", "bolt", "bookmark", "bug_report", "chat", "check", "close", "content_copy", "delete", "edit",
-    "emoji_events", "explore", "extension", "favorite", "flag", "games-recent", "group", "history", "home", "info",
-    "link", "lock", "map", "music_note", "notifications", "pause", "person", "play_arrow", "public", "refresh",
-    "rocket_launch", "schedule", "search", "select_window", "settings", "shield", "shuffle", "skip_next",
-    "sports_esports", "star", "sticky_note_2", "storage", "swap_horiz", "sync", "timer", "visibility", "volume_off",
-    "volume_up",
+pub const ICONS: [&str; 52] = [
+    "add", "album", "bolt", "bookmark", "bug_report", "chat", "check", "close", "content_copy", "delete", "edit",
+    "emoji_events", "explore", "extension", "favorite", "flag", "games-recent", "group", "history", "home",
+    "info", "link", "lock", "lyrics", "map", "music_note", "notifications", "pause", "person", "play_arrow",
+    "public", "push_pin", "refresh", "rocket_launch", "schedule", "search", "select_window", "settings",
+    "shield", "shuffle", "skip_next", "skip_previous", "sports_esports", "star", "sticky_note_2", "storage",
+    "swap_horiz", "sync", "timer", "visibility", "volume_off", "volume_up",
 ];
 
 /// A plugin's button on the bar.
@@ -304,6 +320,24 @@ pub enum Node {
     },
     /// `size`: small or medium.
     Space { #[serde(default)] size: String },
+    /// A bar filling from 0 to `max`, at `value` when sent and moving on by
+    /// `rate` a second by itself (1 for a song that's playing, 0 when paused);
+    /// with `times`, value and max read as minutes:seconds under it.
+    Progress {
+        value: f64,
+        max: f64,
+        #[serde(default)]
+        rate: f64,
+        #[serde(default)]
+        times: bool,
+    },
+    /// A picture on its own: a file of the plugin's or one from its sites,
+    /// sent as an `Avatar`; `size`: small, medium (the default) or large.
+    Image {
+        image: String,
+        #[serde(default)]
+        size: String,
+    },
     /// What an older panel gets for a block a newer Mace has: nothing.
     #[serde(other)]
     Unknown,

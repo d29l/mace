@@ -29,6 +29,13 @@ pub fn toast_arrived() {
     TOAST_PENDING.store(true, Ordering::Release);
 }
 
+/// Something is pinned: drawn even while the panel is closed.
+static PINNED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_pinned(on: bool) {
+    PINNED.store(on, Ordering::Release);
+}
+
 fn env_flag(name: &str) -> bool {
     std::env::var(name).is_ok_and(|v| v == "1")
 }
@@ -99,7 +106,7 @@ pub fn activate() {
 /// Whether presents need the panel's attention at all.
 pub fn visible() -> bool {
     !DISABLED.load(Ordering::Relaxed)
-        && (VISIBLE.load(Ordering::Acquire) || INPUT.toggle_pending() || TOAST_PENDING.load(Ordering::Acquire)
+        && (VISIBLE.load(Ordering::Acquire) || INPUT.toggle_pending() || TOAST_PENDING.load(Ordering::Acquire) || PINNED.load(Ordering::Acquire)
             || debug::pending() || force_open())
 }
 
@@ -174,7 +181,7 @@ pub fn frame(extent: vk::Extent2D) -> Option<Frame> {
     let step = dt / if p.open { OPEN_SECONDS } else { CLOSE_SECONDS };
     p.progress = if p.progress < target { (p.progress + step).min(target) } else { (p.progress - step).max(target) };
     let toasts = TOAST_PENDING.swap(false, Ordering::AcqRel) || p.ui.has_toasts();
-    let showing = p.open || p.progress > 0.0 || toasts;
+    let showing = p.open || p.progress > 0.0 || toasts || PINNED.load(Ordering::Acquire);
     VISIBLE.store(showing, Ordering::Release);
     // the main thread frees the mouse while open, and gives it back after
     sdl::schedule_tick();

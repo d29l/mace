@@ -105,7 +105,7 @@ impl PluginsTab {
     }
 
     fn row(self: &Rc<Self>, plugin: Found) -> adw::ActionRow {
-        let row = adw::ActionRow::builder().title(plugin.name()).subtitle_lines(2).build();
+        let row = adw::ActionRow::builder().title(plugin.name()).subtitle_lines(3).build();
         let switch = gtk::Switch::builder().valign(gtk::Align::Center).build();
         row.add_suffix(&switch);
         row.set_activatable_widget(Some(&switch));
@@ -113,7 +113,16 @@ impl PluginsTab {
             Ok(manifest) => {
                 let about = [manifest.version.clone(), manifest.author.clone()].into_iter()
                     .filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
-                let lines = [manifest.description.clone(), about].into_iter().filter(|s| !s.is_empty())
+                // turned on before it named these: they wait until it's turned on again
+                let entry = crate::settings::load().plugins.get(&plugin.id).cloned();
+                let agreed = plugins::agreed_sites(entry.as_ref());
+                let waiting: Vec<&str> = manifest.http.iter().filter(|s| !agreed.contains(s)).map(String::as_str).collect();
+                let waiting = if plugins::entry_is_on(entry.as_ref()) && !waiting.is_empty() {
+                    format!("Turn it off and on to let it reach {}", waiting.join(", "))
+                } else {
+                    String::new()
+                };
+                let lines = [manifest.description.clone(), about, waiting].into_iter().filter(|s| !s.is_empty())
                     .collect::<Vec<_>>().join("\n");
                 row.set_subtitle(&glib_escape(&lines));
                 self.quiet.set(true);
@@ -155,6 +164,10 @@ impl PluginsTab {
         } else {
             format!("It may:\n{}", may.iter().map(|m| format!("• {m}")).collect::<Vec<_>>().join("\n"))
         };
+        if !manifest.http.is_empty() {
+            body.push_str(&format!("\n\nIt can reach the internet, at:\n{}\nThose sites see your IP address and \
+                                    whatever the plugin sends them.", plugins::describe_sites(manifest).join("\n")));
+        }
         body.push_str("\n\nPlugins are programs. Only turn on ones you trust.");
         let dialog = adw::AlertDialog::new(Some(&format!("Turn on {}?", manifest.name)), Some(&body));
         dialog.add_responses(&[("cancel", "Cancel"), ("on", "Turn On")]);
