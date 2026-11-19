@@ -33,6 +33,10 @@ const PONG: u32 = 4;
 const EVERY: Duration = Duration::from_secs(3);
 /// How long to wait before trying a Discord that wasn't there.
 const RETRY: Duration = Duration::from_secs(15);
+/// The status is sent again this often even when it hasn't changed: a Discord
+/// that reloads (Ctrl+R) keeps the connection but forgets it, and one that
+/// restarts may take it before it's ready to show it.
+const AGAIN: Duration = Duration::from_secs(30);
 
 /// Where Discord listens: the app itself, or Flatpak, Snap and Vesktop installs.
 fn sockets() -> Vec<PathBuf> {
@@ -280,16 +284,17 @@ impl Watcher {
 /// supervisor's account is done); `me` is the account whose log notes it.
 pub fn run(me: &str, stopped: &AtomicBool) {
     if !APP_ID.is_empty() {
-        serve(APP_ID, me, stopped, EVERY);
+        serve(APP_ID, me, stopped, EVERY, AGAIN);
     }
 }
 
-fn serve(app_id: &str, me: &str, stopped: &AtomicBool, every: Duration) {
+fn serve(app_id: &str, me: &str, stopped: &AtomicBool, every: Duration, again: Duration) {
     let mut lock: Option<File> = None;
     let mut discord: Option<Discord> = None;
     let mut shown: Option<Value> = None;
     let mut watcher = Watcher::default();
     let mut retry_at = Instant::now();
+    let mut sent_at = Instant::now();
     loop {
         let until = Instant::now() + every;
         while Instant::now() < until {
@@ -321,7 +326,8 @@ fn serve(app_id: &str, me: &str, stopped: &AtomicBool, every: Duration) {
         }
         let wanted = watcher.presence(config.discord_join);
         let activity = wanted.as_ref().map(|(_, p)| activity(p));
-        if activity == shown && discord.is_some() {
+        let changed = activity != shown;
+        if !changed && discord.is_some() && sent_at.elapsed() < again {
             continue;
         }
         if activity.is_none() && discord.is_none() {
@@ -333,7 +339,10 @@ fn serve(app_id: &str, me: &str, stopped: &AtomicBool, every: Duration) {
                 continue;
             }
             match Discord::connect(app_id) {
-                Ok(d) => discord = Some(d),
+                Ok(d) => {
+                    discord = Some(d);
+                    shown = None;
+                }
                 Err(_) => {
                     retry_at = Instant::now() + RETRY;
                     continue;
@@ -343,8 +352,11 @@ fn serve(app_id: &str, me: &str, stopped: &AtomicBool, every: Duration) {
         let Some(d) = discord.as_mut() else { continue };
         match d.set(activity.as_ref()) {
             Ok(()) => {
-                let what = wanted.as_ref().map_or("nothing".into(), |(account, p)| format!("{} ({account})", p.game));
-                supervisor::note_for(me, &format!("discord: showing {what}"));
+                sent_at = Instant::now();
+                if activity != shown {
+                    let what = wanted.as_ref().map_or("nothing".into(), |(account, p)| format!("{} ({account})", p.game));
+                    supervisor::note_for(me, &format!("discord: showing {what}"));
+                }
                 shown = activity;
             }
             Err(error) => {
@@ -383,12 +395,22 @@ mod tests {
     /// A stand-in Discord: answers the handshake and every command (ERROR for an
     /// activity whose details say "bad"), and passes on what it was sent.
     fn fake_discord(home: &TempHome) -> mpsc::Receiver<(u32, Value)> {
+        fake_discord_quitting(home, None)
+    }
+
+    /// The same, but quitting after answering `quit_after` statuses on a
+    /// connection (and back at once, for the next one).
+    fn fake_discord_quitting(home: &TempHome, quit_after: Option<usize>) -> mpsc::Receiver<(u32, Value)> {
         let listener = UnixListener::bind(home.path().join("run/discord-ipc-0")).unwrap();
         let (tell, heard) = mpsc::channel();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { return };
+                let mut answered = 0;
                 while let Some((op, data)) = read_frame(&mut stream) {
+                    if quit_after == Some(answered) {
+                        break;
+                    }
                     let _ = tell.send((op, data.clone()));
                     let answer = if op == HANDSHAKE {
                         json!({ "cmd": "DISPATCH", "evt": "READY", "data": { "v": 1 } })
@@ -402,6 +424,12 @@ mod tests {
                         let _ = stream.write_all(&frame(PING, &json!({ "n": 1 })));
                     }
                     let _ = stream.write_all(&frame(FRAME, &answer));
+                    if op != HANDSHAKE {
+                        answered += 1;
+                        if quit_after == Some(answered) {
+                            break;
+                        }
+                    }
                 }
             }
         });
@@ -461,9 +489,8 @@ mod tests {
         assert!(!discord.gone());
     }
 
-    #[test]
-    fn the_game_being_played_reaches_discord() {
-        let home = TempHome::new();
+    /// An account in a game, its log and Roblox's answers about it: what Discord should show.
+    fn playing(home: &TempHome) -> std::process::Child {
         let storage = json!({ "UserId": "42", "Username": "playerone", "DisplayName": "Player One" });
         let account = accounts::register(Account::new("main", home.make_prefix("main", Some(storage)), "", false)).unwrap();
         let log = account.logs().join("0.1.0.1_20261115T200000Z_Player_aaaaa_last.log");
@@ -480,13 +507,19 @@ mod tests {
         // the account's Roblox, running (as far as anyone can tell)
         let idle = home.path().join("idle");
         std::fs::write(&idle, "#!/bin/bash\nsleep 30\n").unwrap();
-        let mut game = std::process::Command::new("bash").arg(&idle).arg("run").arg(account.bundle())
-            .env("ROSEMARY_PREFIX", &account.prefix).spawn().unwrap();
+        std::process::Command::new("bash").arg(&idle).arg("run").arg(account.bundle())
+            .env("ROSEMARY_PREFIX", &account.prefix).spawn().unwrap()
+    }
+
+    #[test]
+    fn the_game_being_played_reaches_discord() {
+        let home = TempHome::new();
+        let mut game = playing(&home);
         let heard = fake_discord(&home);
         let stopped = std::sync::Arc::new(AtomicBool::new(false));
         let serving = {
             let stopped = stopped.clone();
-            std::thread::spawn(move || serve("123", "main", &stopped, Duration::from_millis(100)))
+            std::thread::spawn(move || serve("123", "main", &stopped, Duration::from_millis(100), Duration::from_millis(500)))
         };
         let next_activity = || loop {
             let (op, data) = heard.recv_timeout(Duration::from_secs(10)).expect("Discord heard nothing");
@@ -502,17 +535,50 @@ mod tests {
         assert_eq!(shown["assets"]["small_image"], "https://tr.rbxcdn.com/player/150");
         assert_eq!(shown["assets"]["small_text"], "Player One (@playerone)");
         assert!(shown.get("buttons").is_none(), "no join button unless it's turned on");
+        // sent again unchanged, for a Discord that reloaded and forgot it
+        assert_eq!(next_activity(), shown);
         // turned on: the button comes
         settings::save(&settings::Settings { discord_join: true, ..Default::default() }).unwrap();
-        let shown = next_activity();
+        let shown = loop {
+            let next = next_activity();
+            if next.get("buttons").is_some() {
+                break next;
+            }
+        };
         assert_eq!(shown["buttons"][0]["url"], format!("https://www.roblox.com/games/start?placeId=1818&gameInstanceId={}",
                                                         servers::tests::JOB));
         // the game ends: the status goes
         let _ = game.kill();
         let _ = game.wait();
-        assert_eq!(next_activity(), Value::Null);
+        while next_activity() != Value::Null {}
         stopped.store(true, Ordering::Relaxed);
         serving.join().unwrap();
+    }
+
+    #[test]
+    fn a_discord_that_restarts_is_told_again() {
+        let home = TempHome::new();
+        let mut game = playing(&home);
+        let heard = fake_discord_quitting(&home, Some(1));
+        let stopped = std::sync::Arc::new(AtomicBool::new(false));
+        let serving = {
+            let stopped = stopped.clone();
+            // never sent again on a timer here: only because Discord came back
+            std::thread::spawn(move || serve("123", "main", &stopped, Duration::from_millis(100), Duration::from_secs(600)))
+        };
+        let mut ops = Vec::new();
+        while ops.len() < 4 {
+            let (op, data) = heard.recv_timeout(Duration::from_secs(20)).expect("Discord heard nothing");
+            if op == FRAME {
+                assert_eq!(data["args"]["activity"]["details"], "Obby");
+            }
+            ops.push(op);
+        }
+        assert_eq!(ops, [HANDSHAKE, FRAME, HANDSHAKE, FRAME]);
+        stopped.store(true, Ordering::Relaxed);
+        serving.join().unwrap();
+        let _ = game.kill();
+        let _ = game.wait();
     }
 
     #[test]
