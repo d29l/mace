@@ -170,6 +170,20 @@ pub fn dispatch(lua: &str) {
     }
 }
 
+/// Hyprland ignores which monitor Roblox asks to be fullscreen on: always the
+/// one a Mac would call the main screen (here the leftmost). Rosemary puts a
+/// fullscreen window back where the game first placed it whenever the game
+/// brings it forward, as it does when handed a link, and SDL takes that as a
+/// request for that monitor, so each rejoin moved the game there.
+const FULLSCREEN_RULE: &str = r#"hl.window_rule({ name = "mace-roblox-fullscreen", match = { class = "^com\\.roblox\\.RobloxPlayer$" }, suppress_event = "fullscreenoutput" })"#;
+
+/// Before a client starts: Hyprland only applies rules to windows opened afterwards.
+pub fn keep_fullscreen_in_place() {
+    if *HYPRLAND {
+        let _ = Command::new("hyprctl").args(["eval", FULLSCREEN_RULE]).output();
+    }
+}
+
 pub fn focus(pids: &[i32]) -> bool {
     match window_of(pids) {
         Some(window) => {

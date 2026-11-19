@@ -322,6 +322,7 @@ fn run_client(account: &Account, bundle: &Path, url: Option<&str>, config: &Sett
         note(account, &format!("stopped {cleared} leftover process(es)"));
     }
     let _ = std::fs::remove_file(blind_marker(&account.id));
+    processes::keep_fullscreen_in_place();
     let started = unix_time();
     let clock = Instant::now();
     let (reader, writer) = std::io::pipe()?;
