@@ -26,12 +26,33 @@ static UDMUX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"UDMUX Address = ([
 const DISCONNECTED: &str = "Time to disconnect replication data";
 const LEFT_HOME: &str = "leaveUGCGameInternal";
 static STAMP: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z,([0-9.]+),").unwrap());
+    LazyLock::new(|| Regex::new(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?)Z,([0-9.]+),").unwrap());
 pub static PLAYER_LOG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_Player_[0-9a-f]+_last\.log$").unwrap());
 const TELEPORT_GRACE: f64 = 10.0; // seconds of log time
 
 pub fn unix_time() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+}
+
+/// "2026-11-15T20:00:00.250" (UTC, as Roblox's logs have it) in unix seconds.
+pub fn iso_to_unix(text: &str) -> Option<f64> {
+    let (date, time) = text.split_once('T')?;
+    let mut d = date.splitn(3, '-').map(|p| p.parse::<i64>().ok());
+    let (y, m, day) = (d.next()??, d.next()??, d.next()??);
+    let mut t = time.splitn(3, ':');
+    let (h, min) = (t.next()?.parse::<i64>().ok()?, t.next()?.parse::<i64>().ok()?);
+    let sec = t.next()?.parse::<f64>().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&day) || h > 23 || min > 59 || !(0.0..61.0).contains(&sec) {
+        return None;
+    }
+    // days from 1970-01-01 to the date (Howard Hinnant's days_from_civil)
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Some((days * 86400 + h * 3600 + min * 60) as f64 + sec)
 }
 
 pub fn newest_player_log(logs: &Path) -> Option<PathBuf> {
@@ -99,13 +120,16 @@ impl LogFollower {
     }
 
     fn handle(&mut self, line: &str) -> Option<Map<String, Value>> {
-        let clock = STAMP.captures(line).and_then(|m| m[1].parse::<f64>().ok());
+        let stamp = STAMP.captures(line);
+        let clock = stamp.as_ref().and_then(|m| m[2].parse::<f64>().ok());
         if let Some(m) = JOINING.captures(line) {
             let mut server = Map::new();
             server.insert("place".into(), json!(&m[2]));
             server.insert("job".into(), json!(&m[1]));
             server.insert("link".into(), json!(share_link(&m[2], &m[1])));
-            server.insert("since".into(), json!(unix_time()));
+            // when it was logged, so a log read later (Mace restarted, another account's) still tells the time
+            let when = stamp.as_ref().and_then(|m| iso_to_unix(&m[1])).filter(|t| *t <= unix_time() + 60.0);
+            server.insert("since".into(), json!(when.unwrap_or_else(unix_time)));
             server.insert("joined_at".into(), json!(clock));
             self.server = server;
         } else if let Some(m) = UNIVERSE.captures(line) {
@@ -145,6 +169,13 @@ pub fn fetch_json(url: &str) -> Option<Value> {
     let data: Value = builds::agent(Duration::from_secs(6)).get(url).call().ok()?.body_mut().read_json().ok()?;
     LOOKUPS.lock().unwrap().insert(url.to_string(), data.clone());
     Some(data)
+}
+
+/// Answer `url` with `data` from now on, as if it had been fetched (for tests,
+/// which never go online).
+#[cfg(test)]
+pub fn remember_json(url: &str, data: Value) {
+    LOOKUPS.lock().unwrap().insert(url.to_string(), data);
 }
 
 /// Pages of public servers are reused this long.
@@ -223,9 +254,68 @@ fn fill_page(data: &Value, page: &mut ServerPage) {
     }
 }
 
-pub fn game_name(universe: Option<&str>) -> Option<String> {
+/// What Roblox says about a game (an experience, a "universe").
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GameInfo {
+    pub name: String,
+    pub creator: Option<String>,
+    /// The place the game starts in.
+    pub root_place: Option<String>,
+}
+
+pub fn game_info(universe: Option<&str>) -> Option<GameInfo> {
     let data = fetch_json(&format!("https://games.roblox.com/v1/games?universeIds={}", universe?))?;
-    Some(data.get("data")?.get(0)?.get("name")?.as_str()?.to_string())
+    let game = data.get("data")?.get(0)?;
+    Some(GameInfo {
+        name: game.get("name")?.as_str()?.to_string(),
+        creator: game.pointer("/creator/name").and_then(Value::as_str).filter(|c| !c.is_empty()).map(String::from),
+        root_place: game.get("rootPlaceId").and_then(Value::as_u64).map(|p| p.to_string()),
+    })
+}
+
+pub fn game_name(universe: Option<&str>) -> Option<String> {
+    game_info(universe).map(|g| g.name)
+}
+
+/// Where Roblox serves the game's icon (`size` one Roblox offers: 150, 256, 512).
+pub fn game_icon_url(universe: &str, size: u32) -> Option<String> {
+    let data = fetch_json(&format!(
+        "https://thumbnails.roblox.com/v1/games/icons?universeIds={universe}&size={size}x{size}&format=Png&isCircular=false"))?;
+    let item = data.get("data")?.get(0)?;
+    if item.get("state").and_then(Value::as_str).is_some_and(|s| s != "Completed") {
+        return None;
+    }
+    Some(item.get("imageUrl")?.as_str()?.to_string()).filter(|u| u.starts_with("https://"))
+}
+
+/// Where Roblox serves the user's headshot.
+pub fn avatar_url(user_id: &str) -> Option<String> {
+    let data = fetch_json(&format!(
+        "https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={user_id}&size=150x150&format=Png&isCircular=false"))?;
+    Some(data.get("data")?.get(0)?.get("imageUrl")?.as_str()?.to_string()).filter(|u| u.starts_with("https://"))
+}
+
+/// A picture from Roblox's image servers, kept at `path` and fetched again
+/// once it is older than `max_age`; the old copy is kept when that fails.
+pub fn cached_picture(path: &Path, max_age: Duration, url: impl FnOnce() -> Option<String>) -> Option<PathBuf> {
+    let fresh = path.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age < max_age);
+    if fresh {
+        return Some(path.to_path_buf());
+    }
+    let fetched = (|| -> Option<Vec<u8>> {
+        let url = url()?;
+        let mut body = Vec::new();
+        builds::agent(Duration::from_secs(6)).get(&url).call().ok()?.body_mut().as_reader()
+            .take(4 << 20).read_to_end(&mut body).ok()?;
+        body.starts_with(b"\x89PNG").then_some(body)
+    })();
+    match fetched {
+        Some(body) => {
+            fsutil::write_atomic(path, &body).ok()?;
+            Some(path.to_path_buf())
+        }
+        None => path.exists().then(|| path.to_path_buf()),
+    }
 }
 
 /// "🇩🇪 Frankfurt am Main, Hesse, DE", looked up on ipinfo.io.
@@ -255,31 +345,7 @@ fn avatar_path(user_id: &str) -> PathBuf {
 
 /// The user's headshot, cached for a day.
 pub fn avatar(user_id: &str) -> Option<PathBuf> {
-    let path = avatar_path(user_id);
-    let fresh = path
-        .metadata()
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.elapsed().ok())
-        .is_some_and(|age| age < Duration::from_secs(86400));
-    if fresh {
-        return Some(path);
-    }
-    let fetched = (|| -> Option<Vec<u8>> {
-        let data = fetch_json(&format!(
-            "https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={user_id}&size=150x150&format=Png&isCircular=false"))?;
-        let url = data.get("data")?.get(0)?.get("imageUrl")?.as_str()?.to_string();
-        let mut body = Vec::new();
-        builds::agent(Duration::from_secs(6)).get(&url).call().ok()?.body_mut().as_reader().read_to_end(&mut body).ok()?;
-        Some(body)
-    })();
-    match fetched {
-        Some(body) => {
-            fsutil::write_atomic(&path, &body).ok()?;
-            Some(path)
-        }
-        None => path.exists().then_some(path),
-    }
+    cached_picture(&avatar_path(user_id), Duration::from_secs(86400), || avatar_url(user_id))
 }
 
 /// The headshot as fetched before, whatever its age (the window and every start
@@ -359,6 +425,27 @@ pub(crate) mod tests {
             format!("{} [FLog::Network] placeid:{PLACE}, userid:1, universeid:777", stamp(2.0)),
             format!("{} [FLog::Network] UDMUX Address = 128.116.1.2, Port = 61639 | RCC Server Address = x", stamp(3.0)),
         ]
+    }
+
+    #[test]
+    fn log_times_become_unix_times() {
+        for (text, unix) in [("2026-11-15T20:00:00.000", 1794772800.0), ("2000-02-29T12:30:15.5", 951827415.5),
+                             ("1970-01-01T00:00:00", 0.0), ("2024-12-31T23:59:59.000", 1735689599.0)] {
+            assert_eq!(iso_to_unix(text), Some(unix), "{text}");
+        }
+        for bad in ["2026-13-01T00:00:00", "2026-11-15 20:00:00", "x", "2026-11-15T25:00:00"] {
+            assert_eq!(iso_to_unix(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_join_is_dated_by_its_log_line() {
+        let home = TempHome::new();
+        let account = Account::new("main", home.make_prefix("m", None), "", false);
+        let log = account.logs().join("0.747.0.7471481_20261115T200000Z_Player_abcde_last.log");
+        std::fs::write(&log, join_lines().join("\n") + "\n").unwrap();
+        let mut follower = LogFollower::new(&account.logs());
+        assert_eq!(follower.poll()[0]["since"], json!(1794772800.0));
     }
 
     #[test]

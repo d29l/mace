@@ -4,6 +4,7 @@
 pub mod accounts;
 pub mod builds;
 pub mod cli;
+pub mod discord;
 pub mod desktop;
 pub mod doctor;
 pub mod fsutil;
@@ -12,6 +13,7 @@ pub mod links;
 pub mod migrate;
 pub mod mods;
 pub mod panel;
+pub mod recent;
 pub mod paths;
 pub mod processes;
 pub mod runner;

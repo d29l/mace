@@ -35,7 +35,8 @@ pub enum ToPanel {
     Config(Config),
     State(State),
     Servers(ServerPage),
-    /// An account's picture, square, RGBA, base64.
+    /// A picture, square, RGBA, base64: an account's (`user` is its Roblox user
+    /// id) or a game's icon (`user` is "game:" and the game's universe id).
     Avatar { user: String, size: u32, rgba: String },
     Done { id: u64, ok: bool, error: String },
     /// Open or close the panel (`mace panel toggle`).
@@ -106,6 +107,22 @@ pub struct State {
     /// Mace's clock (unix seconds), for "12 min here".
     pub now: f64,
     pub accounts: Vec<Account>,
+    /// Games your accounts played lately, newest first.
+    #[serde(default)]
+    pub games: Vec<Game>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Game {
+    /// The game's universe id; its icon comes as an `Avatar` for "game:{universe}".
+    pub universe: String,
+    /// The place it starts in.
+    pub place: String,
+    pub name: String,
+    /// The account that played it last.
+    pub account: String,
+    /// When (unix seconds).
+    pub when: f64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

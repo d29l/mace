@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use egui::{Align2, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Response, Sense, Shape, Stroke, Ui as EUi, pos2, vec2};
-use mace_proto::{Account, Config, PublicServer, ServerPage, Sort, State, Theme, ToMace};
+use mace_proto::{Account, Config, Game, PublicServer, ServerPage, Sort, State, Theme, ToMace};
 
 use crate::client::{self, Avatar};
 
@@ -168,6 +168,7 @@ enum Icon {
     Window,
     Servers,
     Link,
+    Games,
 }
 
 fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
@@ -221,6 +222,13 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             painter.rect_stroke(Rect::from_min_max(p(-7.0, -5.0), p(5.0, 7.0)), 2.0 * s, stroke, egui::StrokeKind::Middle);
             painter.line_segment([p(-1.0, 1.0), p(7.5, -7.5)], stroke);
             painter.add(Shape::line(vec![p(2.0, -7.5), p(7.5, -7.5), p(7.5, -2.0)], stroke));
+        }
+        Icon::Games => {
+            // four rounded tiles
+            for (x, y) in [(-7.0, -7.0), (1.0, -7.0), (-7.0, 1.0), (1.0, 1.0)] {
+                painter.rect_stroke(Rect::from_min_max(p(x, y), p(x + 6.0, y + 6.0)), 1.8 * s, stroke,
+                                    egui::StrokeKind::Middle);
+            }
         }
         Icon::Servers => {
             for y in [-5.0, 0.0, 5.0] {
@@ -360,6 +368,18 @@ fn since(seconds: f64) -> String {
     }
 }
 
+/// "just now", "5 min ago", "3 h ago", "yesterday", "4 days ago".
+fn ago(when: f64, now: f64) -> String {
+    let minutes = ((now - when).max(0.0) / 60.0) as u64;
+    match minutes {
+        0 => "just now".into(),
+        1..60 => format!("{minutes} min ago"),
+        60..1440 => format!("{} h ago", minutes / 60),
+        1440..2880 => "yesterday".into(),
+        _ => format!("{} days ago", minutes / 1440),
+    }
+}
+
 fn status(a: &Account, here: Option<&str>) -> String {
     if matches!(a.launch.as_deref(), Some("preparing" | "downloading" | "starting" | "updating")) {
         return "starting…".into();
@@ -386,6 +406,7 @@ enum Drop {
     None,
     Servers,
     Alts,
+    Games,
 }
 
 #[derive(Default)]
@@ -565,7 +586,7 @@ impl Ui {
                 };
                 self.paint_avatar(ui, c, &me, avatar, &d.avatars);
 
-                // the actions, from the trailing end: copy link, Alts, Servers, Rejoin
+                // the actions, from the trailing end: copy link, Alts, Games, Servers, Rejoin
                 let compact = bar.width() < 760.0;
                 let label = |text: &'static str| (!compact).then_some(text);
                 let in_game = me.server.is_some();
@@ -574,6 +595,7 @@ impl Ui {
                 let buttons = [
                     ("link", Icon::Link, None, Look::Tonal, in_game, None),
                     ("alts", Icon::Group, label("Alts"), look(Drop::Alts), true, Some(alts)),
+                    ("games", Icon::Games, label("Games"), look(Drop::Games), true, None),
                     ("servers", Icon::Servers, label("Servers"), look(Drop::Servers), in_game, None),
                     ("rejoin", Icon::Refresh, label("Rejoin"), Look::Primary, in_game, None),
                 ];
@@ -587,6 +609,7 @@ impl Ui {
                     let tip = match salt {
                         "link" => "Copy join link",
                         "alts" => "Alts",
+                        "games" => "Recent games",
                         "servers" => "Servers",
                         _ => "Rejoin",
                     };
@@ -603,6 +626,7 @@ impl Ui {
                             }
                         }
                         "alts" => self.open_drop(Drop::Alts),
+                        "games" => self.open_drop(Drop::Games),
                         "servers" => {
                             if let Some(server) = &me.server {
                                 self.open_browser(actions, &server.place);
@@ -656,6 +680,7 @@ impl Ui {
                         match self.drop {
                             Drop::Servers => self.servers(ui, c, d, actions),
                             Drop::Alts => self.alts(ui, c, d, actions),
+                            Drop::Games => self.games(ui, c, d, actions),
                             Drop::None => {}
                         }
                     });
@@ -708,6 +733,47 @@ impl Ui {
                 }
             }
         });
+    }
+
+    fn games(&mut self, ui: &mut EUi, c: Colors, d: &Snapshot, actions: &mut Vec<Action>) {
+        let (Some(state), Some(me)) = (&d.state, d.me()) else { return };
+        title(ui, c, "Recent games", 16.0);
+        if state.games.is_empty() {
+            small(ui, c, "Games you play show up here");
+            return;
+        }
+        let height = (ui.max_rect().bottom() - ui.cursor().top()).max(120.0);
+        egui::ScrollArea::vertical().auto_shrink([false, true]).max_height(height).show(ui, |ui| {
+            for game in &state.games {
+                let who = state.accounts.iter().find(|a| a.id == game.account).map_or("", |a| a.name.as_str());
+                let line = [who.to_string(), ago(game.when, state.now)].into_iter().filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>().join(" · ");
+                if self.game_row(ui, c, game, &line, &d.avatars).clicked() {
+                    let link = format!("roblox://experiences/start?placeId={}", game.place);
+                    self.run(actions, &["start", &me.id, &link]);
+                    self.say(format!("Joining {}…", game.name));
+                    actions.push(Action::Close);
+                }
+            }
+        });
+    }
+
+    fn game_row(&mut self, ui: &mut EUi, c: Colors, game: &Game, line: &str, avatars: &HashMap<String, Avatar>) -> Response {
+        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::click());
+        if response.hovered() {
+            ui.painter().rect_filled(rect, CornerRadius::same(12), c.hover);
+        }
+        let icon = Rect::from_center_size(pos2(rect.min.x + 12.0 + 18.0, rect.center().y), vec2(36.0, 36.0));
+        match self.texture(ui.ctx(), &format!("game:{}", game.universe), avatars) {
+            Some(id) => egui::Image::new((id, icon.size())).corner_radius(CornerRadius::same(8)).paint_at(ui, icon),
+            None => {
+                ui.painter().rect_filled(icon, CornerRadius::same(8), c.surface);
+                paint_icon(ui.painter(), icon.shrink(8.0), Icon::Games, c.text);
+            }
+        }
+        let x = icon.max.x + 12.0;
+        two_lines_at(ui.painter(), c, x, rect.center().y, rect.max.x - 12.0 - x, &game.name, line, 14.0);
+        response.on_hover_text(format!("Play {}", game.name))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1006,7 +1072,10 @@ mod clicks {
         let me = Account { id: "main".into(), name: "Main".into(), running: true, ..Default::default() };
         Snapshot {
             connected: true, config: Some(Config { me: "main".into(), ..Default::default() }),
-            state: Some(Arc::new(State { now: 0.0, accounts: vec![me] })), avatars: HashMap::new(),
+            state: Some(Arc::new(State { now: 7200.0, accounts: vec![me], games: vec![Game {
+                universe: "1".into(), place: "1537690962".into(), name: "Bee Swarm Simulator".into(),
+                account: "main".into(), when: 0.0 }] })),
+            avatars: HashMap::new(),
             pages: Vec::new(), done: Vec::new(), toasts,
         }
     }
@@ -1060,6 +1129,29 @@ mod clicks {
         assert!(frame(&ctx, &mut ui, 1.0, vec![], true, vec![]).is_empty());
         assert!(ui.drop == Drop::None);
         assert!(frame(&ctx, &mut ui, 1.0, vec![], true, vec![]).iter().any(|a| matches!(a, Action::Close)));
+    }
+
+    #[test]
+    fn a_recent_game_starts_here() {
+        let ctx = egui::Context::default();
+        setup(&ctx);
+        let mut ui = Ui::default();
+        ui.opened();
+        ui.drop = Drop::Games;
+        frame(&ctx, &mut ui, 1.0, vec![], false, vec![]);
+        frame(&ctx, &mut ui, 1.0, vec![], false, vec![]);
+        // the first row, under the drop-down's title (it hangs from the bar's trailing end)
+        let width = BAR_WIDEST.min(1280.0 - 48.0);
+        let right = 640.0 + width / 2.0;
+        let at = pos2(right - 220.0, BAR_TOP + BAR_HEIGHT + 8.0 + 20.0 + 40.0 + 28.0);
+        let actions = clicked(&ctx, &mut ui, at);
+        let ran: Vec<&Vec<String>> = actions.iter().filter_map(|a| match a {
+            Action::Send(ToMace::Run { args, .. }) => Some(args),
+            _ => None,
+        }).collect();
+        assert_eq!(ran, [&vec!["start".to_string(), "main".into(), "roblox://experiences/start?placeId=1537690962".into()]]);
+        assert!(actions.iter().any(|a| matches!(a, Action::Close)));
+        assert_eq!(ago(0.0, 7200.0), "2 h ago");
     }
 
     #[test]

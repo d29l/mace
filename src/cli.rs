@@ -18,7 +18,8 @@ pub const HELP: &str = "mace: macOS Roblox on Linux, with multiple accounts.
     mace [settings]               open Mace Settings
     mace play [ACCOUNT]           start Roblox (without ACCOUNT, the one used last)
     mace list [--json]            accounts and what they're doing
-    mace start ACCOUNT [LINK]     start an account (LINK may be another account)
+    mace start ACCOUNT [LINK]     start an account (LINK may be a place ID or another account)
+    mace recent [--json]          games played lately
     mace stop ACCOUNT
     mace open URL                 open a roblox.com link
     mace gather ACCOUNT           bring every account to ACCOUNT's server
@@ -124,6 +125,30 @@ fn str_of<'a>(map: &'a Map<String, Value>, key: &str) -> &'a str {
 }
 
 // ---------------------------------------------------------------- commands
+
+fn cmd_recent(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
+    let games = crate::recent::load();
+    if args.iter().any(|a| a == "--json") {
+        writeln!(out, "{}", serde_json::to_string_pretty(&games)?)?;
+        return Ok(());
+    }
+    if games.is_empty() {
+        writeln!(out, "no games yet: the games your accounts play show up here")?;
+        return Ok(());
+    }
+    let everyone = accounts::accounts();
+    let now = servers::unix_time();
+    let rows: Vec<[String; 4]> = games.iter().map(|g| {
+        let who = everyone.iter().find(|a| a.id == g.account).map_or_else(|| g.account.clone(), Account::name);
+        [g.name.clone(), g.place.clone(), who, crate::recent::ago(g.when, now)]
+    }).collect();
+    let widths: Vec<usize> = (0..3).map(|i| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0)).collect();
+    for r in &rows {
+        writeln!(out, "{:w0$}  {:w1$}  {:w2$}  {}", r[0], r[1], r[2], r[3], w0 = widths[0], w1 = widths[1], w2 = widths[2])?;
+    }
+    writeln!(out, "\nto play one: mace start ACCOUNT PLACE")?;
+    Ok(())
+}
 
 fn cmd_list(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
     let live = live();
@@ -472,6 +497,7 @@ pub fn command(name: &str) -> Option<CommandFn> {
         "open" => cmd_open,
         "gather" => cmd_gather,
         "rejoin" => cmd_rejoin,
+        "recent" => cmd_recent,
         "link" => |a, _| copy_server(a, "link"),
         "job" => |a, _| copy_server(a, "job"),
         "focus" => cmd_focus,
@@ -549,5 +575,29 @@ mod tests {
         assert_eq!(play_account(None).unwrap().unwrap().id, "alt1");
         assert_eq!(play_account(Some("main")).unwrap().unwrap().id, "main");
         assert!(play_account(Some("nobody")).is_err());
+    }
+
+    #[test]
+    fn recent_games_are_listed_with_who_played_them() {
+        let home = TempHome::new();
+        let mut out = Vec::new();
+        cmd_recent(&[], &mut out).unwrap();
+        assert!(String::from_utf8(out).unwrap().starts_with("no games yet"));
+        accounts::register(Account::new("main", home.make_prefix("m", None), "Ana", false)).unwrap();
+        let now = servers::unix_time();
+        let games = serde_json::json!([
+            { "universe": "1", "place": "1537690962", "name": "Bee Swarm Simulator", "account": "main", "when": now - 3.0 * 3600.0 },
+            { "universe": "2", "place": "20", "name": "Doors", "account": "gone", "when": now - 120.0 },
+        ]);
+        crate::fsutil::write_json(&crate::paths::data().join("recent.json"), &games).unwrap();
+        let mut out = Vec::new();
+        cmd_recent(&[], &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "Bee Swarm Simulator  1537690962  Ana   3 h ago");
+        assert_eq!(lines[1], "Doors                20          gone  2 min ago");
+        let mut out = Vec::new();
+        cmd_recent(&["--json".into()], &mut out).unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&out).unwrap()[1]["place"], "20");
     }
 }

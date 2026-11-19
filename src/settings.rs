@@ -92,6 +92,10 @@ pub struct Settings {
     pub anti_afk: bool,
     /// Ask GitHub for a newer Mace when it starts and every hour (only the copy install.sh puts in ~/.local/bin updates itself).
     pub check_updates: bool,
+    /// Show the game you're playing, and as which account, in your Discord status.
+    pub discord: bool,
+    /// A "Join server" button in that status (anyone viewing your profile sees the server's link).
+    pub discord_join: bool,
     /// The in-game panel's key, e.g. "INSERT" or "SHIFT + F1" (the game has to receive it).
     pub overlay_key: String,
     /// Account id -> its own values.
@@ -121,6 +125,8 @@ impl Default for Settings {
             background_fps: 10,
             anti_afk: false,
             check_updates: true,
+            discord: true,
+            discord_join: false,
             overlay_key: "INSERT".into(),
             accounts: Map::new(),
         }
@@ -280,6 +286,8 @@ impl Settings {
             background_fps: as_u64(get("background_fps"), d.background_fps).min(1000),
             anti_afk: truthy(get("anti_afk_opt_in"), d.anti_afk),
             check_updates: truthy(get("check_updates"), d.check_updates),
+            discord: truthy(get("discord"), d.discord),
+            discord_join: truthy(get("discord_join"), d.discord_join),
             overlay_key: text(get("overlay_key")).trim().to_string(),
             accounts,
         }

@@ -5,7 +5,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::{gdk, glib};
@@ -17,9 +18,16 @@ use super::widgets::{background, markup};
 use super::account_settings;
 use crate::accounts::{self, Account, Identity};
 use crate::servers::{self, LogFollower, unix_time};
-use crate::{APP_ID, builds, doctor, launch, processes, supervisor};
+use crate::recent::{self, Game};
+use crate::{APP_ID, builds, doctor, launch, links, processes, supervisor};
 
 const REFRESH_SECONDS: u32 = 2;
+/// Recent games listed under the accounts, and in an account's Start menu.
+const GAMES_LISTED: usize = 8;
+const GAMES_IN_MENU: usize = 5;
+
+/// A recent game, with its icon if there is one.
+type Listed = (Game, Option<PathBuf>);
 
 /// What the worker thread finds out each refresh.
 struct Snapshot {
@@ -27,6 +35,8 @@ struct Snapshot {
     servers: HashMap<String, Map<String, Value>>,
     launching: HashMap<String, Map<String, Value>>,
     identities: HashMap<String, Identity>,
+    /// Recent games, with their icons where there are some.
+    games: Vec<Listed>,
     builds: HashMap<String, String>,
 }
 
@@ -38,6 +48,10 @@ pub struct Window {
     settings: Rc<GlobalSettings>,
     _mods: Rc<ModsTab>,
     rows: RefCell<Vec<Rc<AccountRow>>>,
+    games_group: adw::PreferencesGroup,
+    game_rows: RefCell<Vec<adw::ActionRow>>,
+    /// The games listed, and when, so the list is redrawn when it changes (or a minute on, for "3 min ago").
+    games: RefCell<(Vec<Listed>, Option<Instant>)>,
     followers: Arc<Mutex<HashMap<String, LogFollower>>>,
     busy: Cell<bool>,
 }
@@ -63,8 +77,10 @@ impl Window {
             .css_classes(["pill", "suggested-action"]).build();
         let empty = adw::StatusPage::builder().icon_name(APP_ID).title("No accounts yet")
             .description("Add one, then sign in to Roblox.").child(&empty_add).build();
+        let games_group = adw::PreferencesGroup::builder().title("Recent games").visible(false).build();
         let page = adw::PreferencesPage::new();
         page.add(&group);
+        page.add(&games_group);
         let stack = gtk::Stack::new();
         stack.add_named(&page, Some("accounts"));
         stack.add_named(&empty, Some("empty"));
@@ -91,6 +107,7 @@ impl Window {
         window.set_content(Some(&view));
 
         let me = Rc::new(Window { window: window.clone(), toasts, group, stack, settings, _mods: mods, rows: RefCell::new(Vec::new()),
+                                  games_group, game_rows: RefCell::new(Vec::new()), games: RefCell::new((Vec::new(), None)),
                                   followers: Arc::new(Mutex::new(HashMap::new())), busy: Cell::new(false) });
         for button in [&add, &empty_add] {
             let weak = Rc::downgrade(&me);
@@ -171,7 +188,7 @@ impl Window {
         });
     }
 
-    fn apply(&self, snapshot: &Snapshot) {
+    fn apply(self: &Rc<Self>, snapshot: &Snapshot) {
         let rows = self.rows.borrow();
         for row in rows.iter() {
             *row.who.borrow_mut() = snapshot.identities.get(&row.account.id).cloned().unwrap_or_default();
@@ -182,6 +199,98 @@ impl Window {
                 .map(|r| r.account.name_with(&r.who.borrow()));
             row.refresh(snapshot, twin);
         }
+        drop(rows);
+        self.show_games(&snapshot.games);
+    }
+
+    /// The recent games under the accounts, each with a Play button for the
+    /// account that played it last (and a menu for the others).
+    fn show_games(self: &Rc<Self>, games: &[Listed]) {
+        {
+            let (shown, at) = &*self.games.borrow();
+            if shown.as_slice() == games && at.is_some_and(|t| t.elapsed() < Duration::from_secs(60)) {
+                return;
+            }
+        }
+        *self.games.borrow_mut() = (games.to_vec(), Some(Instant::now()));
+        for row in self.game_rows.borrow_mut().drain(..) {
+            self.games_group.remove(&row);
+        }
+        let everyone: Vec<Account> = self.rows.borrow().iter().map(|r| r.account.clone()).collect();
+        let name_of = |id: &str| self.rows.borrow().iter().find(|r| r.account.id == id).map(|r| r.name());
+        let now = unix_time();
+        for (game, icon) in games.iter().take(GAMES_LISTED) {
+            let player = everyone.iter().find(|a| a.id == game.account).or(everyone.first()).cloned();
+            let Some(player) = player else { break };
+            let who = name_of(&game.account).unwrap_or_else(|| player.name());
+            let row = adw::ActionRow::builder().title(markup(&game.name))
+                .subtitle(markup(&format!("{who} · {}", recent::ago(game.when, now)))).build();
+            let picture = gtk::Image::builder().pixel_size(40).icon_name("applications-games-symbolic").build();
+            if let Some(texture) = icon.as_ref().and_then(|p| gdk::Texture::from_filename(p).ok()) {
+                picture.set_paintable(Some(&texture));
+            }
+            let frame = gtk::Box::builder().valign(gtk::Align::Center).css_classes(["mace-game-icon"])
+                .overflow(gtk::Overflow::Hidden).build();
+            frame.append(&picture);
+            row.add_prefix(&frame);
+
+            let menu = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2)
+                .margin_top(4).margin_bottom(4).margin_start(4).margin_end(4).build();
+            for other in everyone.iter().filter(|a| a.id != player.id) {
+                let (weak, other, game) = (Rc::downgrade(self), other.clone(), game.clone());
+                let label = format!("Play as {}", name_of(&other.id).unwrap_or_else(|| other.name()));
+                AccountRow::item(&menu, &label, "", false, move || {
+                    if let Some(me) = weak.upgrade() {
+                        me.play(&other, &game);
+                    }
+                });
+            }
+            if everyone.len() > 1 {
+                menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+            }
+            let (weak, universe) = (Rc::downgrade(self), game.universe.clone());
+            AccountRow::item(&menu, "Remove from list", "", false, move || {
+                let universe = universe.clone();
+                let weak = weak.clone();
+                background(move || recent::forget(&universe).map_err(|e| e.to_string()), move |result| {
+                    if let Some(me) = weak.upgrade() {
+                        if let Err(error) = result {
+                            me.error(&anyhow::anyhow!(error));
+                        }
+                        me.refresh();
+                    }
+                });
+            });
+            let play = adw::SplitButton::builder().label("Play").valign(gtk::Align::Center)
+                .popover(&gtk::Popover::builder().child(&menu).build())
+                .tooltip_text(format!("Play as {who}")).dropdown_tooltip("Play as another account").build();
+            let (weak, game) = (Rc::downgrade(self), game.clone());
+            play.connect_clicked(move |_| {
+                if let Some(me) = weak.upgrade() {
+                    me.play(&player, &game);
+                }
+            });
+            row.add_suffix(&play);
+            self.games_group.add(&row);
+            self.game_rows.borrow_mut().push(row);
+        }
+        self.games_group.set_visible(!self.game_rows.borrow().is_empty());
+    }
+
+    /// Start a recent game on an account (a running one goes there).
+    fn play(self: &Rc<Self>, account: &Account, game: &Game) {
+        let name = self.rows.borrow().iter().find(|r| r.account.id == account.id).map_or_else(|| account.name(), |r| r.name());
+        self.toast(&format!("{name}: starting {}…", game.name));
+        let (account, link) = (account.clone(), links::start_url(&game.place, None));
+        let weak = Rc::downgrade(self);
+        background(move || launch::start(&account, Some(&link), false, true).map_err(|e| e.to_string()), move |result| {
+            if let Some(me) = weak.upgrade() {
+                match result {
+                    Ok(_) => me.refresh_soon(),
+                    Err(error) => me.error(&anyhow::anyhow!(error)),
+                }
+            }
+        });
     }
 
     fn ask_add(self: &Rc<Self>) {
@@ -240,6 +349,10 @@ fn collect(accounts: &[Account], followers: &Arc<Mutex<HashMap<String, LogFollow
         servers: found,
         launching: accounts.iter().map(|a| (a.id.clone(), supervisor::read_status(&a.id))).collect(),
         identities: accounts.iter().map(|a| (a.id.clone(), a.identity())).collect(),
+        games: recent::load().into_iter().take(GAMES_LISTED).map(|g| {
+            let icon = recent::icon(&g.universe);
+            (g, icon)
+        }).collect(),
         builds: accounts.iter()
             .filter_map(|a| builds::installed(a).map(|b| (a.id.clone(), format!("Roblox {} · channel {}", b.version, b.channel))))
             .collect(),
@@ -496,6 +609,21 @@ impl AccountRow {
         if !any {
             container.append(&gtk::Label::builder().label("No other account is in a server").css_classes(["dim-label"])
                 .margin_top(6).margin_bottom(6).margin_start(8).margin_end(8).build());
+        }
+        let games: Vec<Game> = window.games.borrow().0.iter().map(|(g, _)| g.clone()).take(GAMES_IN_MENU).collect();
+        if !games.is_empty() {
+            container.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+            container.append(&gtk::Label::builder().label("Recent games").xalign(0.0).css_classes(["dim-label", "caption-heading"])
+                .margin_top(6).margin_bottom(2).margin_start(8).build());
+            let now = unix_time();
+            for game in games {
+                let (weak, ago, title) = (Rc::downgrade(self), recent::ago(game.when, now), game.name.clone());
+                Self::item(container, &title, &ago, false, move || {
+                    if let Some(me) = weak.upgrade() {
+                        me.join(links::start_url(&game.place, None), &game.name);
+                    }
+                });
+            }
         }
         container.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         let weak = Rc::downgrade(self);

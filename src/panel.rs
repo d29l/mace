@@ -21,7 +21,7 @@ use serde_json::{Map, Value};
 
 use crate::accounts::{self, Account};
 use crate::servers::LogFollower;
-use crate::{cli, fsutil, launch, paths, processes, servers, settings, supervisor, upgrade};
+use crate::{cli, fsutil, launch, paths, processes, recent, servers, settings, supervisor, upgrade};
 
 pub const LAYER_NAME: &str = "VK_LAYER_MACE_panel";
 pub const LIBRARY: &str = "libmace_panel.so";
@@ -296,6 +296,9 @@ fn config(me: &str) -> Config {
              can_focus: *processes::HYPRLAND, blur: s.panel_blur, background_fps, anti_afk: s.anti_afk }
 }
 
+/// Recent games the in-game bar lists.
+const GAMES_SHOWN: usize = 8;
+
 /// Every account, as the panel shows them.
 pub fn state(followers: &mut HashMap<String, LogFollower>) -> State {
     let everyone = accounts::accounts();
@@ -335,7 +338,10 @@ pub fn state(followers: &mut HashMap<String, LogFollower>) -> State {
     }
     followers.retain(|id, _| live.contains_key(id));
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
-    State { now, accounts: rows }
+    let games = recent::load().into_iter().take(GAMES_SHOWN).map(|g| mace_proto::Game {
+        universe: g.universe, place: g.place, name: g.name, account: g.account, when: g.when,
+    }).collect();
+    State { now, accounts: rows, games }
 }
 
 /// An avatar as square RGBA pixels, at most `size` wide.
@@ -473,6 +479,10 @@ impl Server {
             let shared = shared.clone();
             std::thread::spawn(move || tell_about_update(&shared));
         }
+        {
+            let shared = shared.clone();
+            std::thread::spawn(move || crate::discord::run(&shared.me, &shared.stopped));
+        }
         Some(Server { path, shared })
     }
 }
@@ -557,7 +567,12 @@ fn watch_joins(shared: Arc<Shared>) {
                 let shared = shared.clone();
                 if id == shared.me {
                     // the game's name and the server's place may take a lookup
-                    std::thread::spawn(move || shared.to_panels(&join_toast(&server)));
+                    std::thread::spawn(move || {
+                        shared.to_panels(&join_toast(&server));
+                        if let Err(error) = recent::record(&shared.me, &server) {
+                            supervisor::note_for(&shared.me, &format!("couldn't note the game played: {error:#}"));
+                        }
+                    });
                 } else if here.is_some() && server.get("job").and_then(Value::as_str) == here.as_deref() {
                     let who = names.get(&id).cloned().unwrap_or_else(|| id.clone());
                     shared.to_panels(&ToPanel::Toast { title: format!("{who} joined your server"), body: String::new() });
@@ -605,6 +620,16 @@ fn connection(stream: UnixStream, shared: Arc<Shared>) {
                     if let Some((size, rgba)) = servers::cached_avatar(&user).and_then(|p| avatar_rgba(&p, 96)) {
                         sent_avatars.insert(user.clone());
                         send(&writer, &ToPanel::Avatar { user, size, rgba: mace_proto::base64(&rgba) });
+                    }
+                }
+                for universe in state.games.iter().map(|g| g.universe.clone()) {
+                    let key = format!("game:{universe}");
+                    if sent_avatars.contains(&key) {
+                        continue;
+                    }
+                    if let Some((size, rgba)) = recent::icon(&universe).and_then(|p| avatar_rgba(&p, 96)) {
+                        sent_avatars.insert(key.clone());
+                        send(&writer, &ToPanel::Avatar { user: key, size, rgba: mace_proto::base64(&rgba) });
                     }
                 }
             }

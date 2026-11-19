@@ -32,6 +32,9 @@ prefix, so you can play on several of them at the same time.
   any other file, in the same layout as Bloxstrap's mods folder
 - A loading window, and toasts in the game when you join, saying where the
   server is
+- Recent games, with Play buttons in Mace Settings and the in-game bar
+- Your Discord status shows the game you're playing and as which account,
+  with an optional Join button
 - FastFlags, GameMode, MangoHud and per-account settings
 
 ## Requirements
@@ -79,6 +82,7 @@ on roblox.com, Mace Settings, or the command line:
 mace play [ACCOUNT]       # start Roblox
 mace list                 # your accounts and what they're doing
 mace start ACCOUNT        # start an account
+mace recent               # games played lately
 mace gather ACCOUNT       # bring every other account to ACCOUNT's server
 mace servers ACCOUNT      # the public servers of ACCOUNT's game
 mace why ACCOUNT          # explain why a start failed

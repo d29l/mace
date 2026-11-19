@@ -157,6 +157,20 @@ impl GlobalSettings {
         loading.connect_active_notify({ let c = changed.clone(); move |_| c() });
         self.saver(move |t| t.loading_screen = loading.is_active());
 
+        let group = adw::PreferencesGroup::builder().title("Discord").build();
+        page.add(&group);
+        let discord = adw::SwitchRow::builder().title("Show what you're playing")
+            .subtitle("In your Discord status, with your Roblox account").active(s.discord).build();
+        let join = adw::SwitchRow::builder().title("Join button")
+            .subtitle("Friends can join your server from your status").active(s.discord_join).sensitive(s.discord).build();
+        group.add(&discord);
+        group.add(&join);
+        discord.bind_property("active", &join, "sensitive").build();
+        discord.connect_active_notify({ let c = changed.clone(); move |_| c() });
+        join.connect_active_notify({ let c = changed.clone(); move |_| c() });
+        self.saver(move |t| t.discord = discord.is_active());
+        self.saver(move |t| t.discord_join = join.is_active());
+
         // only the copy install.sh makes updates itself; a source build is updated with git
         if crate::upgrade::installed_copy().is_some() {
             let group = adw::PreferencesGroup::builder().title("Updates").description(format!("Mace {}", crate::VERSION)).build();

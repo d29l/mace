@@ -43,6 +43,7 @@ const STYLE: &str = "
 @define-color popover_fg_color #ededef;
 @define-color dialog_bg_color #2a2a2c;
 @define-color dialog_fg_color #ededef;
+.mace-game-icon { border-radius: 8px; }
 ";
 
 /// Dark, grey and Adwaita's icons, whatever the desktop's theme.
