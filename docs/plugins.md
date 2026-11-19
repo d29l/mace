@@ -155,7 +155,8 @@ to it would be.
 menu, as a card. The bar has one button for every plugin, the puzzle piece;
 its list turns each plugin's widget on screen and off. A widget on screen is
 pinned: it stays while players play, where they put it, at the size they made
-it.
+it. Its ⊗ (in a corner of its card, while it's pointed at) closes it, and the
+list brings it back where it was.
 
 ```lua
 local button = mace.bar.button({

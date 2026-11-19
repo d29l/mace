@@ -1121,17 +1121,19 @@ impl Ui {
                     ui.painter().circle_filled(at.center(), 12.0, Color32::from_black_alpha(150));
                 }
                 let mut corner = ui.new_child(egui::UiBuilder::new().max_rect(at));
-                let tint = if pinned { Some(c.text) } else { Some(c.subtext) };
-                let tip = if pinned { "Unpin" } else { "Keep on screen" };
+                // pinned: it closes (kept where it is; the bar brings it back); a drop-down: it's pinned
+                let (icon, tip) = if pinned { (Icon::Close, "Close") } else { (Icon::Named("push_pin"), "Keep on screen") };
+                let tint = Some(if pinned { c.text } else { c.subtext });
                 let clicked = if strip {
-                    small_icon_button(&mut corner, c, Icon::Named("push_pin"), tip, tint).clicked()
+                    small_icon_button(&mut corner, c, icon, tip, tint).clicked()
                 } else {
-                    icon_button(&mut corner, c, Icon::Named("push_pin"), tip, tint).clicked()
+                    icon_button(&mut corner, c, icon, tip, tint).clicked()
                 };
                 if clicked {
                     if pinned {
-                        self.set_pin(&id, None, actions);
+                        self.toggle_shown(&id, actions);
                     } else {
+
                         // it stays where it is; the drop-down it was is closed
                         self.set_pin(&id, Some(rect.min), actions);
                         self.drop = Drop::None;
@@ -1933,5 +1935,38 @@ mod clicks {
         let bar = Node::Progress { value: 0.0, max: 200.0, rate: 0.0, times: false, key: Some("seek".into()) };
         assert_eq!(sent_plugin(&click_block(&ctx, &mut ui, &bar, pos2(150.0, 6.0))),
                    [("seek".into(), "change".into(), Some(serde_json::json!(100.0)))]);
+    }
+
+    #[test]
+    fn a_pinned_widget_closes_and_keeps_its_place() {
+        let ctx = egui::Context::default();
+        setup(&ctx);
+        let mut ui = Ui::default();
+        let mut data = snapshot(vec![]);
+        data.plugins = vec![PluginButton { plugin: "p".into(), id: "b".into(), icon: "star".into(), tip: "P".into(), badge: None, idle: false }];
+        let menu: Menu = serde_json::from_str(r#"{"title":"P","children":[{"type":"text","text":"hi"}]}"#).unwrap();
+        data.menus.insert(("p".into(), "b".into()), (Arc::new(menu), Instant::now()));
+        let pin = Pin { id: "plugin:p/b".into(), x: 100.0, y: 100.0, w: 0.0, h: 0.0, hidden: false };
+        data.config.as_mut().unwrap().pins = vec![pin];
+        let run = |ui: &mut Ui, events: Vec<egui::Event>, data: &Snapshot| {
+            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))), events,
+                                       ..Default::default() };
+            let mut actions = Vec::new();
+            let mut deltas = ctx.run_ui(raw, |root| actions = ui.show(root, 1.0, data, false)).textures_delta;
+            deltas.clear();
+            actions
+        };
+        run(&mut ui, vec![], &data);
+        // its corner (a card with a title: the top right)
+        let close = pos2(100.0 + 440.0 - 14.0 - 16.0, 100.0 + 14.0 + 16.0);
+        run(&mut ui, vec![egui::Event::PointerMoved(close)], &data);
+        run(&mut ui, vec![click(close, true)], &data);
+        let actions = run(&mut ui, vec![click(close, false)], &data);
+        assert!(ui.is_pinned("plugin:p/b") && !ui.is_shown("plugin:p/b"));
+        let saved = actions.iter().find_map(|a| match a {
+            Action::Send(ToMace::Pins { pins }) => Some(pins.clone()),
+            _ => None,
+        }).expect("saved");
+        assert_eq!((saved[0].x, saved[0].y, saved[0].hidden), (100.0, 100.0, true));
     }
 }
