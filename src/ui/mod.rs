@@ -4,6 +4,7 @@
 mod account_settings;
 mod loading;
 mod mods_tab;
+mod plugins_tab;
 mod settings_tabs;
 mod update;
 mod widgets;

@@ -216,18 +216,42 @@ pub fn frame(extent: vk::Extent2D) -> Option<Frame> {
                 unit: egui::MouseWheelUnit::Line, delta: egui::vec2(dx, dy), phase: egui::TouchPhase::Move, source: egui::MouseWheelSource::Wheel,
                 modifiers: egui::Modifiers::NONE,
             }),
-            UiEvent::Key { scancode, down, .. } => {
+            UiEvent::Key { scancode, down, mods } => {
                 if scancode == crate::input::SCANCODE_ESCAPE && down {
                     escape = true;
                 }
+                let ctrl = mods & mace_proto::MOD_CTRL != 0;
+                let modifiers = egui::Modifiers { alt: mods & mace_proto::MOD_ALT != 0, ctrl,
+                                                  shift: mods & mace_proto::MOD_SHIFT != 0, mac_cmd: false, command: ctrl };
+                if down && ctrl {
+                    match scancode {
+                        6 => raw.events.push(egui::Event::Copy),
+                        27 => raw.events.push(egui::Event::Cut),
+                        25 => sdl::request_paste(),
+                        _ => {}
+                    }
+                }
+                if let Some(key) = editing_key(scancode) {
+                    raw.events.push(egui::Event::Key { key, physical_key: None, pressed: down, repeat: false, modifiers });
+                }
             }
+            UiEvent::Text(text) => raw.events.push(egui::Event::Text(text)),
         }
+    }
+    if let Some(text) = sdl::pasted() {
+        raw.events.push(egui::Event::Paste(text));
     }
     let data = crate::ui::Snapshot::take();
     let progress = ease(p.progress);
     let mut actions = Vec::new();
     let ui = &mut p.ui;
     let output = p.ctx.run_ui(raw, |root| actions = ui.show(root, progress, &data, escape));
+    for command in &output.platform_output.commands {
+        if let egui::OutputCommand::CopyText(text) = command {
+            sdl::copy(text.clone());
+        }
+    }
+    sdl::want_text(p.ctx.egui_wants_keyboard_input());
     for action in actions {
         match action {
             Action::Close => close_panel(p),
@@ -251,4 +275,25 @@ impl Drop for Deltas {
     fn drop(&mut self) {
         self.0.clear();
     }
+}
+
+/// The keys a text field needs, from SDL scancodes.
+fn editing_key(scancode: u32) -> Option<egui::Key> {
+    use egui::Key;
+    Some(match scancode {
+        40 | 88 => Key::Enter,
+        41 => Key::Escape,
+        42 => Key::Backspace,
+        43 => Key::Tab,
+        74 => Key::Home,
+        76 => Key::Delete,
+        77 => Key::End,
+        79 => Key::ArrowRight,
+        80 => Key::ArrowLeft,
+        81 => Key::ArrowDown,
+        82 => Key::ArrowUp,
+        4 => Key::A,
+        29 => Key::Z,
+        _ => return None,
+    })
 }

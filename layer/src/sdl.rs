@@ -63,6 +63,10 @@ sdl_table! {
     mouse_state: "SDL_GetMouseState" => fn(*mut f32, *mut f32) -> u32;
     key_from_scancode: "SDL_GetKeyFromScancode" => fn(u32, u16, bool) -> u32;
     set_clipboard_text: "SDL_SetClipboardText" => fn(*const c_char) -> bool;
+    get_clipboard_text: "SDL_GetClipboardText" => fn() -> *mut c_char;
+    start_text_input: "SDL_StartTextInput" => fn(Window) -> bool;
+    stop_text_input: "SDL_StopTextInput" => fn(Window) -> bool;
+    text_input_active: "SDL_TextInputActive" => fn(Window) -> bool;
     ticks_ns: "SDL_GetTicksNS" => fn() -> u64;
 }
 
@@ -169,6 +173,12 @@ struct Mouse {
 static MOUSE: Mutex<Mouse> = Mutex::new(Mouse { freed: false, game_relative: false, game_hidden: false });
 static TICK_QUEUED: AtomicBool = AtomicBool::new(false);
 static CLIPBOARD: Mutex<Option<String>> = Mutex::new(None);
+/// A text field in the panel has the keyboard: SDL has to send typed text.
+static TEXT_WANTED: AtomicBool = AtomicBool::new(false);
+/// Text input was turned on for the panel (not the game): turned off again after.
+static TEXT_STARTED: AtomicBool = AtomicBool::new(false);
+static PASTE_WANTED: AtomicBool = AtomicBool::new(false);
+static PASTED: Mutex<Option<String>> = Mutex::new(None);
 
 /// Have the main thread look at the panel's state soon (SDL's window and mouse
 /// calls belong there). At most one is queued; it never waits.
@@ -189,6 +199,23 @@ pub fn schedule_tick() {
 pub fn copy(text: String) {
     *CLIPBOARD.lock().unwrap() = Some(text);
     schedule_tick();
+}
+
+/// Whether a text field of the panel's has the keyboard (SDL then sends typed text).
+pub fn want_text(on: bool) {
+    if TEXT_WANTED.swap(on, Ordering::AcqRel) != on {
+        schedule_tick();
+    }
+}
+
+/// Read the clipboard on the main thread; `pasted` has it a frame or so later.
+pub fn request_paste() {
+    PASTE_WANTED.store(true, Ordering::Release);
+    schedule_tick();
+}
+
+pub fn pasted() -> Option<String> {
+    PASTED.lock().unwrap().take()
 }
 
 unsafe extern "C" fn tick(_: *mut c_void) {
@@ -267,6 +294,22 @@ fn main_tick() {
             && let Ok(text) = std::ffi::CString::new(text)
         {
             (s.set_clipboard_text)(text.as_ptr());
+        }
+        // typing into the panel: text input on while one of its fields has the keyboard,
+        // unless the game had it on already (then it's the game's to turn off)
+        let typing = captured && TEXT_WANTED.load(Ordering::Acquire);
+        if typing && !TEXT_STARTED.load(Ordering::Acquire) && !(s.text_input_active)(window) {
+            (s.start_text_input)(window);
+            TEXT_STARTED.store(true, Ordering::Release);
+        } else if !typing && TEXT_STARTED.swap(false, Ordering::AcqRel) {
+            (s.stop_text_input)(window);
+        }
+        if PASTE_WANTED.swap(false, Ordering::AcqRel) {
+            let text = (s.get_clipboard_text)();
+            if !text.is_null() {
+                *PASTED.lock().unwrap() = Some(CStr::from_ptr(text).to_string_lossy().into_owned());
+                (s.free)(text.cast());
+            }
         }
     }
 }

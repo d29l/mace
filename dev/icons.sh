@@ -12,10 +12,11 @@ src=$here/layer/icons/svg
 out=$here/layer/icons
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-for name in refresh link storage games-recent sports_esports group settings close select_window volume_up volume_off; do
+for svg in "$src"/*.svg; do
+    name=$(basename "$svg" .svg)
     : > "$tmp/$name.a8"
     for size in 16 20 24 32 40 48; do
-        rsvg-convert -w "$size" -h "$size" "$src/$name.svg" -o "$tmp/icon.png"
+        rsvg-convert -w "$size" -h "$size" "$svg" -o "$tmp/icon.png"
         magick "$tmp/icon.png" -alpha extract -depth 8 gray:- >> "$tmp/$name.a8"
     done
     mv "$tmp/$name.a8" "$out/$name.a8"

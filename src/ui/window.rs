@@ -13,6 +13,7 @@ use gtk::{gdk, glib};
 use serde_json::{Map, Value};
 
 use super::mods_tab::ModsTab;
+use super::plugins_tab::PluginsTab;
 use super::settings_tabs::GlobalSettings;
 use super::widgets::{background, markup};
 use super::account_settings;
@@ -47,6 +48,7 @@ pub struct Window {
     stack: gtk::Stack,
     settings: Rc<GlobalSettings>,
     _mods: Rc<ModsTab>,
+    _plugins: Rc<PluginsTab>,
     rows: RefCell<Vec<Rc<AccountRow>>>,
     games_group: adw::PreferencesGroup,
     game_rows: RefCell<Vec<adw::ActionRow>>,
@@ -92,7 +94,12 @@ impl Window {
             let toasts = toasts.clone();
             move |text| toasts.add_toast(adw::Toast::new(text))
         });
-        tabs.add_titled_with_icon(&mods.page, Some("mods"), "Mods", "application-x-addon-symbolic");
+        tabs.add_titled_with_icon(&mods.page, Some("mods"), "Mods", "applications-engineering-symbolic");
+        let plugins = PluginsTab::new({
+            let toasts = toasts.clone();
+            move |text| toasts.add_toast(adw::Toast::new(&markup(text)))
+        });
+        tabs.add_titled_with_icon(&plugins.page, Some("plugins"), "Plugins", "application-x-addon-symbolic");
         tabs.add_titled_with_icon(&settings.advanced, Some("advanced"), "Advanced", "preferences-other-symbolic");
 
         toasts.set_child(Some(&tabs));
@@ -106,7 +113,7 @@ impl Window {
         view.set_content(Some(&toasts));
         window.set_content(Some(&view));
 
-        let me = Rc::new(Window { window: window.clone(), toasts, group, stack, settings, _mods: mods, rows: RefCell::new(Vec::new()),
+        let me = Rc::new(Window { window: window.clone(), toasts, group, stack, settings, _mods: mods, _plugins: plugins, rows: RefCell::new(Vec::new()),
                                   games_group, game_rows: RefCell::new(Vec::new()), games: RefCell::new((Vec::new(), None)),
                                   followers: Arc::new(Mutex::new(HashMap::new())), busy: Cell::new(false) });
         for button in [&add, &empty_add] {

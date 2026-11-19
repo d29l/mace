@@ -9,6 +9,7 @@
 //!
 //! Script lines, `FRAME COMMAND ARGS...` (`#` starts a comment):
 //!   key SCANCODE down|up [MODS]   a key event (MODS: SDL_Keymod bits)
+//!   text WORDS...                 typed text (a text input event)
 //!   motion X Y                    the mouse moved to X, Y (window points)
 //!   button N down|up X Y
 //!   wheel DY [X Y]
@@ -82,6 +83,7 @@ const WINDOW_FOCUS_GAINED: u32 = 0x20e;
 const WINDOW_FOCUS_LOST: u32 = 0x20f;
 const KEY_DOWN: u32 = 0x300;
 const KEY_UP: u32 = 0x301;
+const TEXT_INPUT: u32 = 0x303;
 const MOUSE_MOTION: u32 = 0x400;
 const MOUSE_BUTTON_DOWN: u32 = 0x401;
 const MOUSE_BUTTON_UP: u32 = 0x402;
@@ -320,6 +322,13 @@ fn run_step(sdl: &Sdl, window: Window, id: u32, step: &[String], log: &Log, fram
                 e.put(24, num(1) as u32);
                 e.put(32, num(3) as u16);
                 e.put(36, down(2) as u8);
+                push(e);
+            }
+            Some("text") => {
+                // SDL copies the event, not the text: it has to outlive it
+                let text: &'static CStr = Box::leak(CString::new(step[1..].join(" ")).unwrap_or_default().into_boxed_c_str());
+                let mut e = Event::new(TEXT_INPUT, id, now);
+                e.put(24, text.as_ptr() as usize);
                 push(e);
             }
             Some("motion") => {

@@ -36,6 +36,9 @@ pub const HELP: &str = "mace: macOS Roblox on Linux, with multiple accounts.
     mace servers ACCOUNT [--fewest] [--json]
                                   list the game's public servers
     mace panel [ACCOUNT]          toggle the in-game panel
+    mace plugins                  installed plugins (docs/plugins.md: making them)
+    mace plugins new ID           make a plugin to start from
+    mace plugins on|off ID        turn a plugin on or off
     mace --version
 
 ACCOUNT: an id (main, alt1, ...), name, username or display name.
@@ -487,6 +490,47 @@ fn cmd_panel(args: &[String], _out: &mut dyn Write) -> anyhow::Result<()> {
     crate::panel::toggle(&account)
 }
 
+fn cmd_plugins(args: &[String], out: &mut dyn Write) -> anyhow::Result<()> {
+    use crate::plugins;
+    match (args.first().map(String::as_str), args.get(1)) {
+        (None, _) => {
+            let found = plugins::list();
+            if found.is_empty() {
+                writeln!(out, "no plugins in {}", plugins::dir().display())?;
+                writeln!(out, "to make one: mace plugins new ID")?;
+            }
+            for f in found {
+                match &f.manifest {
+                    Ok(m) => writeln!(out, "{:<20} {:<24} {:<8} {}", f.id, m.name, m.version,
+                                      if plugins::is_on(&f.id) { "on" } else { "off" })?,
+                    Err(why) => writeln!(out, "{:<20} can't be used: {why}", f.id)?,
+                }
+            }
+        }
+        (Some("new"), Some(id)) => {
+            let dir = plugins::create(id)?;
+            writeln!(out, "made {}", dir.display())?;
+            writeln!(out, "turn it on with: mace plugins on {id}")?;
+        }
+        (Some(on @ ("on" | "off")), Some(id)) => {
+            let found = plugins::list().into_iter().find(|f| &f.id == id)
+                .ok_or_else(|| anyhow!("no plugin {id} in {}", plugins::dir().display()))?;
+            let manifest = found.manifest.map_err(|why| anyhow!("{id} can't be used: {why}"))?;
+            plugins::set_on(id, on == "on")?;
+            if on == "on" {
+                writeln!(out, "{} is on; games already running pick it up within a second", manifest.name)?;
+                for words in plugins::describe_permissions(&manifest) {
+                    writeln!(out, "  it may: {words}")?;
+                }
+            } else {
+                writeln!(out, "{} is off", manifest.name)?;
+            }
+        }
+        _ => bail!("usage: mace plugins [new ID | on ID | off ID]"),
+    }
+    Ok(())
+}
+
 pub type CommandFn = fn(&[String], &mut dyn Write) -> anyhow::Result<()>;
 
 pub fn command(name: &str) -> Option<CommandFn> {
@@ -513,6 +557,7 @@ pub fn command(name: &str) -> Option<CommandFn> {
         "integrate" => cmd_integrate,
         "servers" => cmd_servers,
         "panel" => cmd_panel,
+        "plugins" => cmd_plugins,
         _ => return None,
     })
 }
@@ -534,6 +579,10 @@ pub fn run(args: &[String]) -> i32 {
         "loading" => {
             let Some(id) = args.get(1) else { return 2 };
             return crate::ui::run_loading(id);
+        }
+        "plugin-host" => {
+            let Some(id) = args.get(1) else { return 2 };
+            return crate::plugins::host::run(id);
         }
         "supervise" => {
             let Some(id) = args.get(1) else { return 2 };

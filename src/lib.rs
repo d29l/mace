@@ -13,6 +13,7 @@ pub mod links;
 pub mod migrate;
 pub mod mods;
 pub mod panel;
+pub mod plugins;
 pub mod recent;
 pub mod paths;
 pub mod processes;

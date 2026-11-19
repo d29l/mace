@@ -67,7 +67,7 @@ fn file_name(path: &Path) -> String {
 
 impl ModsTab {
     pub fn new(toast: impl Fn(&str) + 'static) -> Rc<ModsTab> {
-        let page = adw::PreferencesPage::builder().title("Mods").icon_name("application-x-addon-symbolic").build();
+        let page = adw::PreferencesPage::builder().title("Mods").icon_name("applications-engineering-symbolic").build();
 
         let group = adw::PreferencesGroup::builder().title("Look and sound")
             .description("For every account. Applies to games started afterwards.").build();

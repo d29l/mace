@@ -26,6 +26,19 @@ pub enum ToMace {
     /// From another `mace` process: show this in the game. Answered with
     /// `Done { id: 0, ok }`, ok when a panel was there to show it.
     Toast { title: String, body: String },
+    /// Something done to a plugin's menu: `open` and `close` (the drop-down
+    /// of the plugin's `button`), `click`, `change` (a toggle: `value` is the
+    /// new bool) and `submit` (an input: `value` is the text), for the control
+    /// whose `key` it is.
+    Plugin {
+        plugin: String,
+        button: String,
+        #[serde(default)]
+        key: String,
+        what: String,
+        #[serde(default)]
+        value: Option<serde_json::Value>,
+    },
 }
 
 /// From Mace to the panel.
@@ -36,13 +49,22 @@ pub enum ToPanel {
     State(State),
     Servers(ServerPage),
     /// A picture, square, RGBA, base64: an account's (`user` is its Roblox user
-    /// id) or a game's icon (`user` is "game:" and the game's universe id).
+    /// id), a game's icon (`user` is "game:" and the game's universe id) or a
+    /// plugin's picture (`user` is "plugin:ID/FILE").
     Avatar { user: String, size: u32, rgba: String },
     Done { id: u64, ok: bool, error: String },
     /// Open or close the panel (`mace panel toggle`).
     Toggle,
     /// A note shown in the game for a few seconds, panel open or not.
     Toast { title: String, body: String },
+    /// The plugins' bar buttons, all of them each time (none: an empty list).
+    Plugins { buttons: Vec<PluginButton> },
+    /// What a plugin's drop-down shows, sent when it opens and again whenever it changes.
+    PluginMenu { plugin: String, button: String, menu: Menu },
+    /// Put this text on the clipboard (a plugin asked to).
+    Copy { text: String },
+    /// Close the panel if it's open (a plugin asked to).
+    Close,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -149,6 +171,12 @@ pub struct Server {
     pub location: Option<String>,
     /// When this account joined (unix seconds).
     pub since: Option<f64>,
+    /// The game (its universe id).
+    #[serde(default)]
+    pub universe: Option<String>,
+    /// Your ping there (milliseconds), once the client has connected.
+    #[serde(default)]
+    pub ping: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +211,102 @@ pub struct PublicServer {
     pub ping: Option<u32>,
     /// Known only for servers one of your accounts has been in.
     pub location: Option<String>,
+}
+
+/// The icons a plugin can name: Material Symbols' names, drawn rounded and
+/// filled like the bar's own.
+pub const ICONS: [&str; 48] = [
+    "add", "bolt", "bookmark", "bug_report", "chat", "check", "close", "content_copy", "delete", "edit",
+    "emoji_events", "explore", "extension", "favorite", "flag", "games-recent", "group", "history", "home", "info",
+    "link", "lock", "map", "music_note", "notifications", "pause", "person", "play_arrow", "public", "refresh",
+    "rocket_launch", "schedule", "search", "select_window", "settings", "shield", "shuffle", "skip_next",
+    "sports_esports", "star", "sticky_note_2", "storage", "swap_horiz", "sync", "timer", "visibility", "volume_off",
+    "volume_up",
+];
+
+/// A plugin's button on the bar.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PluginButton {
+    pub plugin: String,
+    pub id: String,
+    /// A built-in icon's name (Material Symbols', e.g. "timer"), or
+    /// "plugin:ID/FILE" for a picture of the plugin's, sent as an `Avatar` and
+    /// drawn as a mask in the text's colour.
+    pub icon: String,
+    pub tip: String,
+    #[serde(default)]
+    pub badge: Option<u32>,
+}
+
+/// A plugin's drop-down.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Menu {
+    pub title: String,
+    #[serde(default)]
+    pub subtitle: Option<String>,
+    #[serde(default)]
+    pub children: Vec<Node>,
+}
+
+/// One building block of a plugin's menu. Styles are names, so a newer Mace's
+/// styles fall back to the plain one in an older panel; a control's `key` is
+/// what the panel sends back when it's used (none: it does nothing).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Node {
+    /// `style`: normal, subtle or title.
+    Text { text: String, #[serde(default)] style: String },
+    /// `style`: primary, secondary or danger.
+    Button {
+        label: String,
+        #[serde(default)]
+        style: String,
+        #[serde(default)]
+        icon: Option<String>,
+        #[serde(default)]
+        key: Option<String>,
+    },
+    /// A list row: an icon or a picture, a title and a line under it, and maybe a button at its end.
+    Row {
+        #[serde(default)]
+        icon: Option<String>,
+        #[serde(default)]
+        image: Option<String>,
+        title: String,
+        #[serde(default)]
+        subtitle: Option<String>,
+        #[serde(default)]
+        key: Option<String>,
+        #[serde(default)]
+        trailing: Option<Box<Node>>,
+    },
+    Toggle {
+        label: String,
+        value: bool,
+        #[serde(default)]
+        key: Option<String>,
+    },
+    Input {
+        #[serde(default)]
+        placeholder: String,
+        #[serde(default)]
+        value: String,
+        #[serde(default)]
+        key: Option<String>,
+    },
+    /// `direction`: column (the default) or row; `gap`: small or medium.
+    Stack {
+        #[serde(default)]
+        direction: String,
+        #[serde(default)]
+        gap: String,
+        children: Vec<Node>,
+    },
+    /// `size`: small or medium.
+    Space { #[serde(default)] size: String },
+    /// What an older panel gets for a block a newer Mace has: nothing.
+    #[serde(other)]
+    Unknown,
 }
 
 impl ToMace {
@@ -255,5 +379,15 @@ mod tests {
         let back: ToPanel = serde_json::from_str(&ToPanel::Config(Config::default()).line()).unwrap();
         assert_eq!(back, ToPanel::Config(Config::default()));
         assert_eq!(serde_json::from_str::<ToMace>("{\"type\":\"state\"}").unwrap(), ToMace::State);
+    }
+
+    #[test]
+    fn a_newer_menu_still_reads() {
+        let line = r#"{"type":"plugin_menu","plugin":"notes","button":"b","menu":{"title":"Notes","children":[
+            {"type":"text","text":"hi"},{"type":"chart","points":[1,2]},
+            {"type":"button","label":"Go","style":"glowing","key":"cb:1"}]}}"#;
+        let ToPanel::PluginMenu { menu, .. } = serde_json::from_str(line).unwrap() else { panic!() };
+        assert_eq!(menu.children[1], Node::Unknown);
+        assert!(matches!(&menu.children[2], Node::Button { style, key: Some(k), .. } if style == "glowing" && k == "cb:1"));
     }
 }

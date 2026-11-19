@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use mace_proto::{Config, ServerPage, State, ToMace, ToPanel};
+use mace_proto::{Config, Menu, PluginButton, ServerPage, State, ToMace, ToPanel};
 
 use crate::{detail, pace, panel};
 
@@ -29,6 +29,14 @@ pub struct Data {
     pub done: Vec<(u64, bool, String)>,
     /// Toasts not yet taken by the UI.
     pub toasts: Vec<(String, String)>,
+    /// The plugins' bar buttons.
+    pub plugins: Vec<PluginButton>,
+    /// Each plugin drop-down's menu, by (plugin, button), as last sent.
+    pub menus: HashMap<(String, String), Arc<Menu>>,
+    /// Text plugins asked to copy, not yet taken by the UI.
+    pub copies: Vec<String>,
+    /// A plugin asked for the panel to close.
+    pub close: bool,
 }
 
 pub static DATA: Mutex<Option<Data>> = Mutex::new(None);
@@ -110,6 +118,19 @@ fn receive(message: ToPanel) {
             });
             panel::toast_arrived();
         }
+        ToPanel::Plugins { buttons } => with(|d| {
+            d.menus.retain(|(plugin, button), _| buttons.iter().any(|b| &b.plugin == plugin && &b.id == button));
+            d.plugins = buttons;
+        }),
+        ToPanel::PluginMenu { plugin, button, menu } => with(|d| {
+            d.menus.insert((plugin, button), Arc::new(menu));
+        }),
+        ToPanel::Copy { text } => with(|d| {
+            if d.copies.len() < 4 {
+                d.copies.push(text);
+            }
+        }),
+        ToPanel::Close => with(|d| d.close = true),
     }
 }
 

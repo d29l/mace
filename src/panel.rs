@@ -20,6 +20,7 @@ use mace_proto::{Config, Key, State, Theme, ToMace, ToPanel};
 use serde_json::{Map, Value};
 
 use crate::accounts::{self, Account};
+use crate::plugins::protocol::{FromHost, ToHost};
 use crate::servers::LogFollower;
 use crate::{cli, fsutil, launch, paths, processes, recent, servers, settings, supervisor, upgrade};
 
@@ -299,6 +300,21 @@ fn config(me: &str) -> Config {
 /// Recent games the in-game bar lists.
 const GAMES_SHOWN: usize = 8;
 
+/// A server an account is in (from its log, described), as the panel shows it.
+pub fn proto_server(s: &Map<String, Value>) -> mace_proto::Server {
+    let text = |k: &str| s.get(k).and_then(Value::as_str).map(String::from);
+    mace_proto::Server {
+        place: text("place").unwrap_or_default(),
+        job: text("job").unwrap_or_default(),
+        link: text("link").unwrap_or_default(),
+        name: text("name"),
+        location: text("location"),
+        since: s.get("since").and_then(Value::as_f64),
+        universe: text("universe"),
+        ping: s.get("ping").and_then(Value::as_u64).map(|p| p as u32),
+    }
+}
+
 /// Every account, as the panel shows them.
 pub fn state(followers: &mut HashMap<String, LogFollower>) -> State {
     let everyone = accounts::accounts();
@@ -316,7 +332,6 @@ pub fn state(followers: &mut HashMap<String, LogFollower>) -> State {
         } else {
             None
         };
-        let text = |m: &Map<String, Value>, k: &str| m.get(k).and_then(Value::as_str).map(String::from);
         rows.push(mace_proto::Account {
             id: account.id.clone(),
             name: account.name_with(&who),
@@ -326,14 +341,7 @@ pub fn state(followers: &mut HashMap<String, LogFollower>) -> State {
             launch: supervisor::read_status(&account.id).get("state").and_then(Value::as_str).map(String::from),
             running,
             muted: if running { processes::muted(account, Some(&snapshot), Some(&inputs)) } else { None },
-            server: server.map(|s| mace_proto::Server {
-                place: text(&s, "place").unwrap_or_default(),
-                job: text(&s, "job").unwrap_or_default(),
-                link: text(&s, "link").unwrap_or_default(),
-                name: text(&s, "name"),
-                location: text(&s, "location"),
-                since: s.get("since").and_then(Value::as_f64),
-            }),
+            server: server.as_ref().map(proto_server),
         });
     }
     followers.retain(|id, _| live.contains_key(id));
@@ -437,9 +445,37 @@ struct Shared {
     followers: Mutex<HashMap<String, LogFollower>>,
     /// The server is gone: its threads stop.
     stopped: AtomicBool,
+    /// The plugin host's stdin, while it runs.
+    to_host: Mutex<Option<Box<dyn Write + Send>>>,
+    /// What a panel connecting now needs to draw the plugins: their buttons, then their pictures.
+    plugin_buttons: Mutex<Option<ToPanel>>,
+    plugin_images: Mutex<HashMap<String, ToPanel>>,
 }
 
 impl Shared {
+    fn new(me: &str) -> Shared {
+        Shared { me: me.to_string(), panels: Mutex::new(Vec::new()), followers: Mutex::new(HashMap::new()),
+                 stopped: AtomicBool::new(false), to_host: Mutex::new(None), plugin_buttons: Mutex::new(None),
+                 plugin_images: Mutex::new(HashMap::new()) }
+    }
+
+    fn to_host(&self, message: &ToHost) {
+        let mut host = self.to_host.lock().unwrap();
+        if let Some(stdin) = host.as_mut()
+            && stdin.write_all(message.line().as_bytes()).and_then(|_| stdin.flush()).is_err()
+        {
+            *host = None;
+        }
+    }
+
+    /// Tell the plugins what the panel would show now.
+    fn state_to_host(&self) {
+        if self.to_host.lock().unwrap().is_some() {
+            let state = state(&mut self.followers.lock().unwrap());
+            self.to_host(&ToHost::State { state });
+        }
+    }
+
     /// To every panel; false when there was none to send to.
     fn to_panels(&self, message: &ToPanel) -> bool {
         let panels = self.panels.lock().unwrap().clone();
@@ -473,8 +509,7 @@ impl Server {
         let _ = std::fs::create_dir_all(paths::runtime());
         let listener = UnixListener::bind(&path).ok()?;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        let shared = Arc::new(Shared { me: account.id.clone(), panels: Mutex::new(Vec::new()),
-                                       followers: Mutex::new(HashMap::new()), stopped: AtomicBool::new(false) });
+        let shared = Arc::new(Shared::new(&account.id));
         {
             let shared = shared.clone();
             std::thread::spawn(move || {
@@ -496,6 +531,10 @@ impl Server {
             let shared = shared.clone();
             std::thread::spawn(move || crate::discord::run(&shared.me, &shared.stopped));
         }
+        {
+            let shared = shared.clone();
+            std::thread::spawn(move || run_plugins(shared));
+        }
         Some(Server { path, shared })
     }
 }
@@ -504,6 +543,116 @@ impl Drop for Server {
     fn drop(&mut self) {
         self.shared.stopped.store(true, Ordering::Relaxed);
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// The plugin host for this account (`mace plugin-host`; in tests, a thread),
+/// its stdin and stdout.
+type HostLink = (Box<dyn Write + Send>, Box<dyn BufRead + Send>, Option<std::process::Child>);
+
+fn spawn_host(me: &str) -> Option<HostLink> {
+    if cfg!(test) {
+        let (host_in, to_host) = std::io::pipe().ok()?;
+        let (from_host, host_out) = std::io::pipe().ok()?;
+        let me = me.to_string();
+        std::thread::spawn(move || crate::plugins::host::serve(&me, BufReader::new(host_in), host_out));
+        return Some((Box::new(to_host), Box::new(BufReader::new(from_host)), None));
+    }
+    let mut child = std::process::Command::new(launch::mace_exe())
+        .args(["plugin-host", me])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let stdin = child.stdin.take()?;
+    let stdout = child.stdout.take()?;
+    Some((Box::new(stdin), Box::new(BufReader::new(stdout)), Some(child)))
+}
+
+/// Run the plugin host while the server runs (again if it dies, a few times),
+/// and carry out what it says.
+fn run_plugins(shared: Arc<Shared>) {
+    for attempt in 0..5 {
+        if shared.stopped.load(Ordering::Relaxed) {
+            return;
+        }
+        let Some((stdin, stdout, mut child)) = spawn_host(&shared.me) else {
+            supervisor::note_for(&shared.me, "couldn't start the plugin host");
+            return;
+        };
+        *shared.to_host.lock().unwrap() = Some(stdin);
+        // the plugins hear what the panel would show, now and then and after joins
+        {
+            let shared = shared.clone();
+            std::thread::spawn(move || {
+                while !shared.stopped.load(Ordering::Relaxed) && shared.to_host.lock().unwrap().is_some() {
+                    shared.state_to_host();
+                    for _ in 0..20 {
+                        if shared.stopped.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                }
+            });
+        }
+        for line in stdout.lines() {
+            let Ok(line) = line else { break };
+            let Ok(message) = serde_json::from_str::<FromHost>(&line) else { continue };
+            from_host(&shared, message);
+        }
+        *shared.to_host.lock().unwrap() = None;
+        if let Some(child) = child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if shared.stopped.load(Ordering::Relaxed) {
+            return;
+        }
+        supervisor::note_for(&shared.me, &format!("the plugin host stopped (attempt {})", attempt + 1));
+        // the panels forget the buttons until it's back
+        let none = ToPanel::Plugins { buttons: Vec::new() };
+        shared.to_panels(&none);
+        *shared.plugin_buttons.lock().unwrap() = Some(none);
+        std::thread::sleep(Duration::from_secs(5));
+    }
+}
+
+fn from_host(shared: &Arc<Shared>, message: FromHost) {
+    match message {
+        FromHost::Buttons { buttons } => {
+            let message = ToPanel::Plugins { buttons };
+            shared.to_panels(&message);
+            *shared.plugin_buttons.lock().unwrap() = Some(message);
+        }
+        FromHost::Menu { plugin, button, menu } => {
+            shared.to_panels(&ToPanel::PluginMenu { plugin, button, menu });
+        }
+        FromHost::Image { key, size, rgba } => {
+            let message = ToPanel::Avatar { user: key.clone(), size, rgba };
+            shared.to_panels(&message);
+            shared.plugin_images.lock().unwrap().insert(key, message);
+        }
+        FromHost::Toast { title, body } => {
+            shared.to_panels(&ToPanel::Toast { title, body });
+        }
+        FromHost::Copy { text } => {
+            shared.to_panels(&ToPanel::Copy { text });
+        }
+        FromHost::Close => {
+            shared.to_panels(&ToPanel::Close);
+        }
+        FromHost::Act { args } => {
+            let me = shared.me.clone();
+            std::thread::spawn(move || {
+                let (ok, error) = run(&args);
+                if !ok {
+                    supervisor::note_for(&me, &format!("a plugin's {}: {error}", args.join(" ")));
+                }
+            });
+        }
+        FromHost::Log { text } => supervisor::note_for(&shared.me, &text),
     }
 }
 
@@ -551,6 +700,7 @@ fn watch_joins(shared: Arc<Shared>) {
     let mut followers: HashMap<String, LogFollower> = HashMap::new();
     let mut names: HashMap<String, String> = HashMap::new();
     let mut fresh: HashSet<String> = HashSet::new();
+    let mut was_here: Option<String> = None;
     let mut next_accounts = std::time::Instant::now();
     while !shared.stopped.load(Ordering::Relaxed) {
         if std::time::Instant::now() >= next_accounts {
@@ -585,6 +735,9 @@ fn watch_joins(shared: Arc<Shared>) {
                         if let Err(error) = recent::record(&shared.me, &server) {
                             supervisor::note_for(&shared.me, &format!("couldn't note the game played: {error:#}"));
                         }
+                        let joined = crate::plugins::api::server_json(&proto_server(&servers::describe(&server)));
+                        shared.state_to_host();
+                        shared.to_host(&ToHost::Event { name: "joined".into(), data: joined });
                     });
                 } else if here.is_some() && server.get("job").and_then(Value::as_str) == here.as_deref() {
                     let who = names.get(&id).cloned().unwrap_or_else(|| id.clone());
@@ -592,6 +745,10 @@ fn watch_joins(shared: Arc<Shared>) {
                 }
             }
         }
+        if was_here.is_some() && here.is_none() {
+            shared.to_host(&ToHost::Event { name: "left".into(), data: Value::Null });
+        }
+        was_here = here;
         std::thread::sleep(Duration::from_millis(500));
     }
 }
@@ -684,6 +841,12 @@ fn connection(stream: UnixStream, shared: Arc<Shared>) {
         match message {
             ToMace::Hello { pid, video, .. } => {
                 shared.panels.lock().unwrap().push(writer.clone());
+                if let Some(buttons) = shared.plugin_buttons.lock().unwrap().clone() {
+                    send(&writer, &buttons);
+                }
+                for image in shared.plugin_images.lock().unwrap().values() {
+                    send(&writer, image);
+                }
                 supervisor::note_for(&me, &format!("panel ready (pid {pid}, {video})"));
                 if let Some(start) = send_config.take() {
                     start();
@@ -705,10 +868,25 @@ fn connection(stream: UnixStream, shared: Arc<Shared>) {
                     ask_state();
                 });
             }
-            ToMace::Event { what } if what == "focused" => {
-                let _ = fsutil::write_atomic(&focused_file(), me.as_bytes());
+            ToMace::Event { what } => {
+                if what == "focused" {
+                    let _ = fsutil::write_atomic(&focused_file(), me.as_bytes());
+                }
+                let name = match what.as_str() {
+                    "open" => "opened",
+                    "closed" => "closed",
+                    "focused" => "focused",
+                    _ => continue,
+                };
+                shared.to_host(&ToHost::Event { name: name.into(), data: Value::Null });
             }
-            ToMace::Event { .. } => {}
+            ToMace::Plugin { plugin, button, key, what, value } => {
+                // in order (an open, then a click), with what the menu may show first
+                if what == "open" {
+                    shared.state_to_host();
+                }
+                shared.to_host(&ToHost::Ui { plugin, button, key, what, value });
+            }
             ToMace::Toggle => {
                 shared.to_panels(&ToPanel::Toggle);
             }
@@ -864,5 +1042,40 @@ mod tests {
                      ToPanel::Toast { title: "Second joined your server".into(), body: String::new() }] {
             assert!(toasts.contains(&want), "{toasts:?}");
         }
+    }
+
+    #[test]
+    fn a_plugin_reaches_the_panel_and_hears_back() {
+        let _home = crate::testenv::TempHome::new();
+        crate::plugins::tests::write_plugin("hello", serde_json::json!({"id": "hello", "name": "Hello", "api": 1}), r#"
+            mace.bar.button({ id = "b", icon = "star", tip = "Say hi", menu = function()
+                return mace.ui.menu({ title = "Hello" }, {
+                    mace.ui.button("Hi", { onClick = function() mace.toast("Hi from a plugin") end }),
+                })
+            end })
+        "#);
+        crate::plugins::set_on("hello", true).unwrap();
+        let account = Account::new("main", "/nowhere", "Main", true);
+        let _server = Server::start(&account).expect("serves");
+        let stream = UnixStream::connect(socket_path("main")).unwrap();
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+        let mut writer = stream.try_clone().unwrap();
+        let mut lines = BufReader::new(stream).lines().map_while(Result::ok)
+            .filter_map(|l| serde_json::from_str::<ToPanel>(&l).ok());
+        let hello = ToMace::Hello { v: mace_proto::VERSION, pid: 1, video: "test".into(), swapchain: String::new() };
+        writer.write_all(hello.line().as_bytes()).unwrap();
+        // the button arrives (the host loads the plugin within a second of starting)
+        let buttons = lines.find_map(|m| match m { ToPanel::Plugins { buttons } if !buttons.is_empty() => Some(buttons), _ => None })
+            .expect("the plugin's button");
+        assert_eq!((buttons[0].plugin.as_str(), buttons[0].icon.as_str(), buttons[0].tip.as_str()), ("hello", "star", "Say hi"));
+        let open = ToMace::Plugin { plugin: "hello".into(), button: "b".into(), key: String::new(), what: "open".into(), value: None };
+        writer.write_all(open.line().as_bytes()).unwrap();
+        let menu = lines.find_map(|m| match m { ToPanel::PluginMenu { menu, .. } => Some(menu), _ => None }).expect("its menu");
+        assert_eq!(menu.title, "Hello");
+        let Some(mace_proto::Node::Button { key: Some(key), .. }) = menu.children.first().cloned() else { panic!("{menu:?}") };
+        let click = ToMace::Plugin { plugin: "hello".into(), button: "b".into(), key, what: "click".into(), value: None };
+        writer.write_all(click.line().as_bytes()).unwrap();
+        let toast = lines.find(|m| matches!(m, ToPanel::Toast { .. }));
+        assert_eq!(toast, Some(ToPanel::Toast { title: "Hi from a plugin".into(), body: String::new() }));
     }
 }

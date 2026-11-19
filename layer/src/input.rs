@@ -62,6 +62,17 @@ impl Event {
         // SAFETY: in bounds (checked above).
         unsafe { std::ptr::read_unaligned(self.0.as_ptr().add(at).cast()) }
     }
+    /// A text input event's text (`SDL_TextInputEvent.text`, a C string SDL
+    /// owns while the event is handled).
+    pub fn text(&self) -> Option<String> {
+        let pointer: usize = self.get(24);
+        if pointer == 0 {
+            return None;
+        }
+        // SAFETY: SDL's pointer to a NUL-terminated string, valid while the filter runs.
+        let text = unsafe { std::ffi::CStr::from_ptr(pointer as *const std::ffi::c_char) };
+        Some(text.to_string_lossy().into_owned()).filter(|t| !t.is_empty())
+    }
     pub fn kind(&self) -> u32 {
         self.get(0)
     }
@@ -126,6 +137,8 @@ pub enum UiEvent {
     Button { button: u8, down: bool, x: f32, y: f32 },
     Wheel { dx: f32, dy: f32 },
     Key { scancode: u32, down: bool, mods: u8 },
+    /// Typed text (SDL's text input).
+    Text(String),
 }
 
 /// Something held when the panel opened, to be released for the game.
@@ -308,7 +321,13 @@ impl Input {
                 Pressed::remove(&mut p.game, key)
                     || !captured
             }
-            TEXT_INPUT | TEXT_EDITING | TEXT_EDITING_CANDIDATES => !captured,
+            TEXT_INPUT => {
+                if captured && let Some(text) = e.text() {
+                    self.queue(UiEvent::Text(text));
+                }
+                !captured
+            }
+            TEXT_EDITING | TEXT_EDITING_CANDIDATES => !captured,
             MOUSE_MOTION => {
                 if captured {
                     let (x, y) = e.motion();

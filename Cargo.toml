@@ -21,6 +21,7 @@ anyhow = "1"
 mace-proto = { path = "proto" }
 png = "0.18"
 sha2 = "0.10"
+mlua = { version = "0.12", features = ["luau", "serialize"] }
 
 [profile.release]
 lto = "thin"

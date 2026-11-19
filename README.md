@@ -35,6 +35,7 @@ prefix, so you can play on several of them at the same time.
 - Recent games, with Play buttons in Mace Settings and the in-game bar
 - Your Discord status shows the game you're playing and as which account,
   with an optional Join button
+- Plugins: add your own buttons and menus to the in-game bar, in Luau
 - FastFlags, GameMode, MangoHud and per-account settings
 
 ## Requirements
@@ -89,6 +90,21 @@ mace why ACCOUNT          # explain why a start failed
 ```
 
 Run `mace --help` for everything else.
+
+## Plugins
+
+Plugins add buttons and menus to the in-game bar and can act on what happens
+in your game. They're written in Luau, the language Roblox scripts use, and
+run in a sandbox in Mace, never inside Roblox. Turn them on in Mace Settings →
+Plugins, which asks first and says what each one may do.
+
+```sh
+mace plugins new hello    # a plugin to start from
+mace plugins on hello     # turn it on
+```
+
+Saving a plugin's script reloads it in your game. [docs/plugins.md](docs/plugins.md)
+has everything plugins can do.
 
 ## Update
 

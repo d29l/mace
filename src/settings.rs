@@ -98,6 +98,8 @@ pub struct Settings {
     pub discord_join: bool,
     /// The in-game panel's key, e.g. "INSERT" or "SHIFT + F1" (the game has to receive it).
     pub overlay_key: String,
+    /// Plugin id -> turned on. Plugins are off until turned on.
+    pub plugins: Map<String, Value>,
     /// Account id -> its own values.
     pub accounts: Map<String, Value>,
 }
@@ -128,6 +130,7 @@ impl Default for Settings {
             discord: true,
             discord_join: false,
             overlay_key: "INSERT".into(),
+            plugins: Map::new(),
             accounts: Map::new(),
         }
     }
@@ -289,6 +292,11 @@ impl Settings {
             discord: truthy(get("discord"), d.discord),
             discord_join: truthy(get("discord_join"), d.discord_join),
             overlay_key: text(get("overlay_key")).trim().to_string(),
+            plugins: match get("plugins") {
+                Some(Value::Object(map)) => map.iter().filter(|(_, on)| on.as_bool() == Some(true))
+                    .map(|(id, _)| (id.clone(), Value::Bool(true))).collect(),
+                _ => Map::new(),
+            },
             accounts,
         }
     }
