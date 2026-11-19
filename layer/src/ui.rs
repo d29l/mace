@@ -5,9 +5,9 @@
 //! copy to the clipboard, done right here).
 //!
 //! Layout follows the usual rules for toolbars: an 8-point grid, icon buttons
-//! with tooltips, groups kept apart by space rather than lines, settings at the
-//! trailing end, 40-point targets, inner corners following the outer ones, and
-//! no borders (a soft shadow lifts things off the game).
+//! with tooltips, evenly spaced, settings at the trailing end, 40-point
+//! targets, inner corners following the outer ones, and no borders (a soft
+//! shadow lifts things off the game).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,6 +27,8 @@ const BAR_RADIUS: u8 = 24;
 /// 64-point bar it's the same all round.
 const INSET: f32 = 12.0;
 const CONTROL: f32 = 40.0;
+/// Space between the bar's buttons, the same everywhere.
+const BUTTON_GAP: f32 = 4.0;
 /// How long a toast stays, in seconds.
 const TOAST_SECONDS: f32 = 4.5;
 
@@ -560,33 +562,30 @@ impl Ui {
                 };
                 self.paint_avatar(ui, c, &me, avatar, &d.avatars);
 
-                // the actions, from the trailing end, in groups kept apart by space:
-                // Mace Settings; the drop-downs (servers, games, alts); this server (copy its link, rejoin)
+                // the actions, evenly spaced from the trailing end: Mace Settings, alts,
+                // recent games, servers, copy this server's link, rejoin
                 let in_game = me.server.is_some();
                 let alts = d.state.as_ref().map_or(0, |s| s.accounts.iter().filter(|a| a.id != me.id && a.running).count());
                 let open = |drop: Drop| self.drop == drop;
                 let button = |salt, icon, tip, selected, enabled, badge| BarButton { salt, icon, tip, selected, enabled, badge };
-                let groups = [
-                    vec![button("settings", Icon::Settings, "Mace Settings", false, true, None)],
-                    vec![button("alts", Icon::Alts, "Alts", open(Drop::Alts), true, Some(alts)),
-                         button("games", Icon::Games, "Recent games", open(Drop::Games), true, None),
-                         button("servers", Icon::Servers, "Servers", open(Drop::Servers), in_game, None)],
-                    vec![button("link", Icon::Link, "Copy join link", false, in_game, None),
-                         button("rejoin", Icon::Refresh, "Rejoin", false, in_game, None)],
+                let buttons = [
+                    button("settings", Icon::Settings, "Mace Settings", false, true, None),
+                    button("alts", Icon::Alts, "Alts", open(Drop::Alts), true, Some(alts)),
+                    button("games", Icon::Games, "Recent games", open(Drop::Games), true, None),
+                    button("servers", Icon::Servers, "Servers", open(Drop::Servers), in_game, None),
+                    button("link", Icon::Link, "Copy join link", false, in_game, None),
+                    button("rejoin", Icon::Refresh, "Rejoin", false, in_game, None),
                 ];
                 let mut right = bar.max.x - INSET;
                 let mut clicked = Vec::new();
-                for group in groups {
-                    for b in &group {
-                        let rect = Rect::from_min_max(pos2(right - CONTROL, mid - CONTROL / 2.0), pos2(right, mid + CONTROL / 2.0));
-                        right = rect.min.x - 4.0;
-                        if bar_button(ui, c, rect, b).clicked() {
-                            clicked.push(b.salt);
-                        }
+                for b in &buttons {
+                    let rect = Rect::from_min_max(pos2(right - CONTROL, mid - CONTROL / 2.0), pos2(right, mid + CONTROL / 2.0));
+                    right = rect.min.x - BUTTON_GAP;
+                    if bar_button(ui, c, rect, b).clicked() {
+                        clicked.push(b.salt);
                     }
-                    right -= 12.0;
                 }
-                right += 16.0;
+                right += BUTTON_GAP;
                 for salt in clicked {
                     match salt {
                         "link" => {
@@ -616,7 +615,7 @@ impl Ui {
                 }
 
                 // you, then this server, in the space left (with room to breathe before the buttons)
-                let room = right + 8.0 - 24.0 - text_left;
+                let room = right - 24.0 - text_left;
                 let user = if me.username.is_empty() { String::new() } else { format!("@{}", me.username) };
                 let wide = |text: &str, font: FontId| painter.layout_no_wrap(text.into(), font, c.text).size().x;
                 let identity = wide(&me.name, bold(15.0)).max(wide(&user, regular(12.5))).min(160.0);
