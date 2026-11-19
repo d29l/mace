@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, LazyLock};
 
 use anyhow::bail;
@@ -301,16 +301,20 @@ fn hand_over(account: &Account, argv: &[String], env: &Env) -> anyhow::Result<Ha
     };
     // what Rosemary says goes to the account's log, and is listened to
     let second = Arc::new(AtomicBool::new(false));
+    let handed_to = Arc::new(AtomicI32::new(0));
     let streams: [Option<Box<dyn std::io::Read + Send>>; 2] =
         [child.stdout.take().map(|s| Box::new(s) as _), child.stderr.take().map(|s| Box::new(s) as _)];
     for stream in streams.into_iter().flatten() {
-        let (second, mut log) = (second.clone(), log.try_clone()?);
+        let (second, handed_to, mut log) = (second.clone(), handed_to.clone(), log.try_clone()?);
         std::thread::spawn(move || {
             use std::io::{BufRead, Write};
             for line in std::io::BufReader::new(stream).lines().map_while(Result::ok) {
                 let _ = writeln!(log, "{line}");
                 if SECOND_CLIENT.iter().any(|s| line.contains(s)) {
                     second.store(true, Ordering::Relaxed);
+                }
+                if let Some(pid) = HANDED.captures(&line).and_then(|m| m[1].parse::<i32>().ok()) {
+                    handed_to.store(pid, Ordering::Relaxed);
                 }
             }
         });
@@ -337,6 +341,12 @@ fn hand_over(account: &Account, argv: &[String], env: &Env) -> anyhow::Result<Ha
             let _ = child.wait();
             return Ok(Handed::Taken);
         }
+        // Rosemary gave it to the game itself (Roblox only logs links it starts with, not ones it gets while running)
+        let pid = handed_to.swap(0, Ordering::Relaxed);
+        if pid > 0 && processes::running(std::slice::from_ref(account), None).get(&account.id).is_some_and(|p| p.contains(&pid)) {
+            let _ = child.wait();
+            return Ok(Handed::Taken);
+        }
         if let Some(status) = child.try_wait()?
             && !status.success()
         {
@@ -346,7 +356,7 @@ fn hand_over(account: &Account, argv: &[String], env: &Env) -> anyhow::Result<Ha
     }
     kill_group();
     let _ = child.wait();
-    bail!("{}'s Roblox didn't take the link", account.name())
+    bail!("{}'s Roblox didn't respond. Try again, or restart it", account.name())
 }
 
 /// How a hand-over went.
@@ -360,6 +370,9 @@ enum Handed {
 
 /// What the client logs when it is given a link.
 const OPENED_URL: &str = "(AppDelegate) application:openURLs";
+/// What a `rosemary run` says when it gave the link to the running client.
+static HANDED: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"is already running \(pid (\d+)\) and was handed this launch").unwrap());
 /// What a `rosemary run` says when it's about to start a client of its own
 /// instead of handing the link over.
 const SECOND_CLIENT: [&str; 2] = ["process server is unavailable", "imports unbound"];
@@ -538,11 +551,37 @@ mod tests {
     }
 
     #[test]
+    fn a_link_rosemary_gives_the_running_game_is_taken() {
+        let home = TempHome::new();
+        // as Rosemary says it; the game logs nothing about links it gets while running
+        let (account, mut client, _handler, _) = live_account(&home,
+            "#!/bin/bash\necho \"rosemary: $3 is already running (pid $FAKE_CLIENT_PID) and was handed this launch\" >&2\n");
+        // SAFETY: TempHome holds the environment lock.
+        unsafe { std::env::set_var("FAKE_CLIENT_PID", client.id().to_string()) };
+        let result = start(&account, Some("roblox://experiences/start?placeId=1818"), false, false);
+        unsafe { std::env::remove_var("FAKE_CLIENT_PID") };
+        result.unwrap(); // not "didn't respond" after the wait
+        assert!(client.try_wait().unwrap().is_none());
+        let _ = client.kill();
+        let _ = client.wait();
+    }
+
+    #[test]
+    fn a_link_handed_to_another_process_is_not_taken() {
+        let home = TempHome::new();
+        let (account, mut client, _handler, _) = live_account(&home,
+            "#!/bin/bash\necho \"rosemary: $3 is already running (pid 1) and was handed this launch\"\n");
+        assert!(start(&account, Some("roblox://experiences/start?placeId=1818"), false, false).is_err());
+        let _ = client.kill();
+        let _ = client.wait();
+    }
+
+    #[test]
     fn a_link_the_client_never_takes_is_an_error() {
         let home = TempHome::new();
         let (account, mut client, _handler, _) = live_account(&home, "#!/bin/bash\nexit 0\n");
         let error = start(&account, Some("roblox://experiences/start?placeId=1818"), false, false).unwrap_err();
-        assert!(error.to_string().contains("didn't take the link"), "{error}");
+        assert!(error.to_string().contains("didn't respond"), "{error}");
         assert!(client.try_wait().unwrap().is_none());
         let _ = client.kill();
         let _ = client.wait();
