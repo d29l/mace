@@ -21,11 +21,12 @@ function ui.menu(props, children)
 end
 function ui.text(text, o)
     o = options(o)
-    return { type = "text", text = tostring(text), style = o.style }
+    return { type = "text", text = tostring(text), style = o.style, size = o.size, lines = o.lines }
 end
 function ui.button(label, o)
     o = options(o)
-    return { type = "button", label = tostring(label), style = o.style, icon = o.icon, onClick = o.onClick }
+    return { type = "button", label = tostring(label or ""), style = o.style, size = o.size, icon = o.icon,
+             onClick = o.onClick }
 end
 function ui.row(o)
     o = options(o)
@@ -42,18 +43,23 @@ function ui.input(o)
 end
 function ui.stack(children, o)
     o = options(o)
-    return { type = "stack", children = children or {}, direction = o.direction, gap = o.gap }
+    return { type = "stack", children = children or {}, direction = o.direction, gap = o.gap, align = o.align,
+             grow = o.grow == true }
 end
 function ui.space(size)
     return { type = "space", size = size }
 end
 function ui.progress(value, max, o)
     o = options(o)
-    return { type = "progress", value = value, max = max, rate = o.rate, times = o.times == true }
+    return { type = "progress", value = value, max = max, rate = o.rate, times = o.times == true, onSeek = o.onSeek }
 end
 function ui.image(image, o)
     o = options(o)
-    return { type = "image", image = image, size = o.size }
+    return { type = "image", image = image, size = if o.size == nil then nil else tostring(o.size) }
+end
+function ui.overlay(children, o)
+    o = options(o)
+    return { type = "overlay", children = children or {}, align = o.align, reveal = o.reveal }
 end
 return ui
 "#;
@@ -149,7 +155,7 @@ fn node(lua: &Lua, value: LuaValue, keys: &mut Keys, depth: usize) -> mlua::Resu
     }
     let t = match value {
         LuaValue::Table(t) => t,
-        LuaValue::String(s) => return Ok(Node::Text { text: s.to_str()?.chars().take(LONGEST_TEXT).collect(), style: String::new() }),
+        LuaValue::String(s) => return Ok(Node::text(s.to_str()?.chars().take(LONGEST_TEXT).collect::<String>(), "")),
         other => return Err(bad(format!("a menu's blocks come from mace.ui, not {}", other.type_name()))),
     };
     let kind = text(&t, "type")?.unwrap_or_default();
@@ -157,10 +163,16 @@ fn node(lua: &Lua, value: LuaValue, keys: &mut Keys, depth: usize) -> mlua::Resu
         text(&t, field)?.map(|i| icon(lua, keys.ctx, &i)).transpose()
     };
     Ok(match kind.as_str() {
-        "text" => Node::Text { text: text(&t, "text")?.unwrap_or_default(), style: style(&t, "style")? },
+        "text" => Node::Text {
+            text: text(&t, "text")?.unwrap_or_default(),
+            style: style(&t, "style")?,
+            size: style(&t, "size")?,
+            lines: t.get::<Option<u32>>("lines")?.unwrap_or(0).min(50),
+        },
         "button" => Node::Button {
             label: text(&t, "label")?.unwrap_or_default(),
             style: style(&t, "style")?,
+            size: style(&t, "size")?,
             icon: icon_of("icon")?,
             key: keys.key(t.get("onClick")?)?,
         },
@@ -188,6 +200,13 @@ fn node(lua: &Lua, value: LuaValue, keys: &mut Keys, depth: usize) -> mlua::Resu
         "stack" => Node::Stack {
             direction: style(&t, "direction")?,
             gap: style(&t, "gap")?,
+            align: style(&t, "align")?,
+            grow: t.get::<Option<bool>>("grow")?.unwrap_or(false),
+            children: children(lua, &t, keys, depth)?,
+        },
+        "overlay" => Node::Overlay {
+            align: style(&t, "align")?,
+            reveal: style(&t, "reveal")?,
             children: children(lua, &t, keys, depth)?,
         },
         "space" => Node::Space { size: style(&t, "size")? },
@@ -196,6 +215,7 @@ fn node(lua: &Lua, value: LuaValue, keys: &mut Keys, depth: usize) -> mlua::Resu
             max: t.get::<Option<f64>>("max")?.unwrap_or(1.0),
             rate: t.get::<Option<f64>>("rate")?.unwrap_or(0.0),
             times: t.get::<Option<bool>>("times")?.unwrap_or(false),
+            key: keys.key(t.get("onSeek")?)?,
         },
         "image" => Node::Image {
             image: picture(keys.ctx, &text(&t, "image")?.unwrap_or_default())?,
@@ -216,7 +236,8 @@ pub fn to_menu(lua: &Lua, value: LuaValue, keys: &mut Keys) -> mlua::Result<Menu
         return Err(bad("the menu function should return ui.menu(...)"));
     }
     Ok(Menu {
-        title: text(&t, "title")?.unwrap_or_else(|| keys.ctx.name.clone()),
+        // no title: no header (the card has a slim strip instead)
+        title: text(&t, "title")?.unwrap_or_default(),
         subtitle: text(&t, "subtitle")?,
         children: children(lua, &t, keys, 0)?,
     })

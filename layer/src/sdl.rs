@@ -53,6 +53,7 @@ sdl_table! {
     windows: "SDL_GetWindows" => fn(*mut c_int) -> *mut Window;
     free: "SDL_free" => fn(*mut c_void);
     window_id: "SDL_GetWindowID" => fn(Window) -> u32;
+    window_from_id: "SDL_GetWindowFromID" => fn(u32) -> Window;
     window_size: "SDL_GetWindowSize" => fn(Window, *mut c_int, *mut c_int) -> bool;
     get_relative: "SDL_GetWindowRelativeMouseMode" => fn(Window) -> bool;
     set_relative: "SDL_SetWindowRelativeMouseMode" => fn(Window, bool) -> bool;
@@ -120,6 +121,17 @@ unsafe extern "C" fn filter(_: *mut c_void, event: *mut Event) -> bool {
                 crate::debug::request(name);
             }
             return true;
+        }
+        // whether the mouse is free (not locked to the game's camera): only then are pinned things clickable
+        if matches!(e.kind(), input::MOUSE_MOTION | input::MOUSE_BUTTON_DOWN | input::MOUSE_BUTTON_UP | input::MOUSE_WHEEL)
+            && let Some(s) = get()
+        {
+            // SAFETY: main-thread SDL queries (the filter runs where events are pumped).
+            let free = unsafe {
+                let window = (s.window_from_id)(e.get::<u32>(16));
+                !window.is_null() && !(s.get_relative)(window) && (s.cursor_visible)()
+            };
+            panel::INPUT.set_mouse_free(free);
         }
         match e.kind() {
             input::WINDOW_FOCUS_GAINED => pace::focus(true),

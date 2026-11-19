@@ -71,6 +71,8 @@ pub struct Ctx {
     pub recent: RefCell<std::collections::VecDeque<Instant>>,
     /// The menu last sent, so an unchanged one isn't sent again.
     pub last_menu: RefCell<Option<mace_proto::Menu>>,
+    /// The room its menu has (points), as the panel last said; 0 until it does.
+    pub size: Cell<(f64, f64)>,
 }
 
 /// Requests a plugin may have going at once, and make in a minute.

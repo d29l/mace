@@ -263,6 +263,7 @@ impl Host {
             in_flight: Cell::new(0),
             recent: RefCell::new(Default::default()),
             last_menu: RefCell::new(None),
+            size: Cell::new((0.0, 0.0)),
         });
         lua.set_interrupt(|lua| {
             if let Some(c) = lua.app_data_ref::<Ctx>()
@@ -347,6 +348,14 @@ impl Host {
                 let Ok(c) = ctx(&lua) else { return };
                 if c.button.borrow().as_ref().is_none_or(|b| b.id != button) {
                     return;
+                }
+                // the room the menu has: open and size say
+                if let Some(room) = value.as_ref().filter(|_| what == "open" || what == "size") {
+                    let size = (room["width"].as_f64().unwrap_or(0.0), room["height"].as_f64().unwrap_or(0.0));
+                    if size != c.size.get() {
+                        c.size.set(size);
+                        c.dirty.set(true);
+                    }
                 }
                 match what.as_str() {
                     "open" => {
@@ -461,7 +470,7 @@ impl Host {
                 }
                 Err(error) => {
                     let menu = mace_proto::Menu { title: name.clone(), subtitle: None, children: vec![
-                        mace_proto::Node::Text { text: format!("This menu failed: {}", brief(&error)), style: "subtle".into() },
+                        mace_proto::Node::text(format!("This menu failed: {}", brief(&error)), "subtle"),
                     ] };
                     self.out.borrow_mut().push(FromHost::Menu { plugin: id.clone(), button, menu });
                     self.complain(&id, &name, "its menu", &error);
@@ -493,7 +502,12 @@ impl Host {
         lua.set_named_registry_value("mace_old_keys", current)?;
         let keys = lua.create_table()?;
         lua.set_named_registry_value("mace_keys", &keys)?;
-        let made: LuaValue = guarded(lua, CALL_LIMIT, || menu.call(()))?;
+        // the room it has, for menus that change with it
+        let (width, height) = ctx(lua)?.size.get();
+        let room = lua.create_table()?;
+        room.set("width", width)?;
+        room.set("height", height)?;
+        let made: LuaValue = guarded(lua, CALL_LIMIT, || menu.call(room))?;
         let c = ctx(lua)?;
         let mut keys = super::ui::Keys { table: &keys, ctx: &c, count: 0 };
         guarded(lua, CALL_LIMIT, || super::ui::to_menu(lua, made, &mut keys))
@@ -625,15 +639,15 @@ mod tests {
             if buttons.len() == 1 && buttons[0].icon == "timer" && buttons[0].tip == "Count")), "{out:?}");
         let menu = menu_of(&ui(&mut host, "counter", "", "open", None));
         assert_eq!((menu.title.as_str(), menu.subtitle.as_deref()), ("Count", Some("Frankfurt, DE")));
-        assert_eq!(menu.children[0], Node::Text { text: "0".into(), style: String::new() });
+        assert_eq!(menu.children[0], Node::text("0", ""));
         let more = key_of(&menu, "More");
         let menu = menu_of(&ui(&mut host, "counter", &more, "click", None));
-        assert_eq!(menu.children[0], Node::Text { text: "1".into(), style: String::new() });
+        assert_eq!(menu.children[0], Node::text("1", ""));
         // stored: a host started later (another account, or after a restart) sees it
         let mut again = Host::new("alt1");
         again.scan(true);
         let menu = menu_of(&ui(&mut again, "counter", "", "open", None));
-        assert_eq!(menu.children[0], Node::Text { text: "1".into(), style: String::new() });
+        assert_eq!(menu.children[0], Node::text("1", ""));
         // closed: no more drawing
         assert!(ui(&mut host, "counter", "", "close", None).iter().all(|m| !matches!(m, FromHost::Menu { .. })));
     }
@@ -683,7 +697,7 @@ mod tests {
         // and it still works afterwards
         let menu = menu_of(&out);
         let out = ui(&mut host, "spin", &key_of(&menu, "Fine"), "click", None);
-        assert_eq!(menu_of(&out).children[0], Node::Text { text: "11".into(), style: String::new() });
+        assert_eq!(menu_of(&out).children[0], Node::text("11", ""));
     }
 
     #[test]
@@ -871,7 +885,7 @@ mod tests {
         let mut host = host();
         assert!(toasts(&host.take_output()).is_empty());
         let menu = menu_of(&ui(&mut host, "bits", "", "open", None));
-        assert_eq!(menu.children[0], Node::Progress { value: 30.0, max: 200.0, rate: 1.0, times: true });
+        assert_eq!(menu.children[0], Node::Progress { value: 30.0, max: 200.0, rate: 1.0, times: true, key: None });
         // redrawn, but the same: nothing sent
         host.handle(ToHost::Ui { plugin: "bits".into(), button: "b".into(), key: "k".into(), what: "click".into(), value: None });
         if let Ok(c) = ctx(&host.plugins[0].lua) {

@@ -184,6 +184,15 @@ pub struct Input {
     pub window: AtomicU32,
     /// Off for good (the panel was disabled): everything passes.
     pub off: AtomicBool,
+    /// Where pinned things are (window points, x0 y0 x1 y1): with the mouse
+    /// free, clicks there are theirs, the panel open or not.
+    hits: Mutex<Vec<[f32; 4]>>,
+    /// The mouse is free (not held by the game for its camera), as last seen.
+    mouse_free: AtomicBool,
+    /// A press on a pinned thing is going on: what follows is the panel's too.
+    grabbed: AtomicBool,
+    /// The pointer was last said to be away (locked by the game).
+    away: AtomicBool,
 }
 
 thread_local! {
@@ -221,6 +230,10 @@ impl Input {
             points: AtomicU64::new(0),
             window: AtomicU32::new(0),
             off: AtomicBool::new(false),
+            hits: Mutex::new(Vec::new()),
+            mouse_free: AtomicBool::new(true),
+            grabbed: AtomicBool::new(false),
+            away: AtomicBool::new(false),
         }
     }
 
@@ -255,6 +268,20 @@ impl Input {
         let v = self.points.load(Ordering::Relaxed);
         let (w, h) = (f32::from_bits((v >> 32) as u32), f32::from_bits(v as u32));
         (w > 0.0 && h > 0.0).then_some((w, h))
+    }
+
+    pub fn set_hits(&self, hits: Vec<[f32; 4]>) {
+        *self.hits.lock().unwrap() = hits;
+    }
+
+    pub fn set_mouse_free(&self, free: bool) {
+        self.mouse_free.store(free, Ordering::Relaxed);
+    }
+
+    /// Whether (x, y) is on something pinned, with the mouse free to click it.
+    fn on_pinned(&self, x: f32, y: f32) -> bool {
+        self.mouse_free.load(Ordering::Relaxed)
+            && self.hits.lock().unwrap().iter().any(|r| x >= r[0] && y >= r[1] && x < r[2] && y < r[3])
     }
 
     pub fn drain(&self) -> Vec<UiEvent> {
@@ -332,11 +359,31 @@ impl Input {
                 if captured {
                     let (x, y) = e.motion();
                     self.queue(UiEvent::Move(x, y));
+                    return false;
                 }
-                !captured
+                if self.hits.lock().unwrap().is_empty() {
+                    return true;
+                }
+                // pinned things show the pointer over them (the game still gets it), unless they've been grabbed
+                if self.mouse_free.load(Ordering::Relaxed) {
+                    let (x, y) = e.motion();
+                    self.away.store(false, Ordering::Relaxed);
+                    self.queue(UiEvent::Move(x, y));
+                } else if !self.away.swap(true, Ordering::Relaxed) {
+                    self.queue(UiEvent::Move(-10_000.0, -10_000.0));
+                }
+                !self.grabbed.load(Ordering::Relaxed)
             }
             MOUSE_BUTTON_DOWN => {
                 let button = Held::Button(e.button());
+                let (x, y) = e.button_at();
+                if !captured && self.on_pinned(x, y) {
+                    self.grabbed.store(true, Ordering::Relaxed);
+                    Pressed::add(&mut self.pressed.lock().unwrap().swallowed, button);
+                    self.queue(UiEvent::Move(x, y));
+                    self.queue(UiEvent::Button { button: e.button(), down: true, x, y });
+                    return false;
+                }
                 if captured {
                     Pressed::add(&mut self.pressed.lock().unwrap().swallowed, button);
                     let (x, y) = e.button_at();
@@ -351,7 +398,8 @@ impl Input {
                 let mut p = self.pressed.lock().unwrap();
                 if Pressed::remove(&mut p.swallowed, button) {
                     drop(p);
-                    if captured {
+                    let grabbed = self.grabbed.swap(false, Ordering::Relaxed);
+                    if captured || grabbed {
                         let (x, y) = e.button_at();
                         self.queue(UiEvent::Button { button: e.button(), down: false, x, y });
                     }
@@ -360,11 +408,13 @@ impl Input {
                 Pressed::remove(&mut p.game, button) || !captured
             }
             MOUSE_WHEEL => {
-                if captured {
+                let (x, y) = e.wheel_at();
+                if captured || self.on_pinned(x, y) {
                     let (dx, dy) = e.wheel();
                     self.queue(UiEvent::Wheel { dx, dy });
+                    return false;
                 }
-                !captured
+                true
             }
             // touch, pinch and pen: the panel doesn't use them, the game doesn't get them while it's open
             0x700..=0x7ff | 0x1300..=0x13ff => !captured,
@@ -503,5 +553,36 @@ mod tests {
         assert!(input.filter(&key(true, TAB, GUI_MOD | 0x0001)), "Super+Shift+Tab isn't the key");
         assert!(!input.captured.load(Ordering::Relaxed));
         assert!(input.filter(&key(true, TAB, 0)));
+    }
+
+    #[test]
+    fn a_pinned_card_takes_its_clicks_with_the_panel_closed() {
+        let input = panel();
+        input.set_hits(vec![[100.0, 100.0, 300.0, 200.0]]);
+        let mut motion = Event::new(MOUSE_MOTION);
+        motion.put(28, 150.0f32);
+        motion.put(32, 150.0f32);
+        // the game sees the pointer move; the card does too, for hovering
+        assert!(input.filter(&motion));
+        assert_eq!(input.drain(), [UiEvent::Move(150.0, 150.0)]);
+        // a click on it is the card's, its release too
+        assert!(!input.filter(&button(true, 1, 150.0, 150.0)));
+        assert!(!input.filter(&button(false, 1, 150.0, 150.0)));
+        let got = input.drain();
+        assert!(got.contains(&UiEvent::Button { button: 1, down: true, x: 150.0, y: 150.0 }), "{got:?}");
+        assert!(got.contains(&UiEvent::Button { button: 1, down: false, x: 150.0, y: 150.0 }), "{got:?}");
+        // one elsewhere is the game's
+        assert!(input.filter(&button(true, 1, 500.0, 150.0)));
+        assert!(input.filter(&button(false, 1, 500.0, 150.0)));
+        // with the mouse held by the game (its camera), the card isn't clickable
+        input.set_mouse_free(false);
+        assert!(input.filter(&button(true, 1, 150.0, 150.0)));
+        assert!(input.filter(&button(false, 1, 150.0, 150.0)));
+        // nothing pinned: nothing changes
+        input.set_mouse_free(true);
+        input.set_hits(Vec::new());
+        input.drain();
+        assert!(input.filter(&motion));
+        assert!(input.drain().is_empty());
     }
 }

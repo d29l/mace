@@ -187,6 +187,7 @@ pub fn frame(extent: vk::Extent2D) -> Option<Frame> {
     sdl::schedule_tick();
     let dump = debug::take();
     if !showing {
+        INPUT.set_hits(Vec::new());
         INPUT.drain();
         return dump.map(|dump| Frame { blur: 0.0, ppp: 1.0, primitives: Vec::new(), textures: Deltas(Default::default()), dump: Some(dump) });
     }
@@ -253,6 +254,7 @@ pub fn frame(extent: vk::Extent2D) -> Option<Frame> {
     let mut actions = Vec::new();
     let ui = &mut p.ui;
     let output = p.ctx.run_ui(raw, |root| actions = ui.show(root, progress, &data, escape));
+    INPUT.set_hits(ui.hits.iter().map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]).collect());
     for command in &output.platform_output.commands {
         if let egui::OutputCommand::CopyText(text) = command {
             sdl::copy(text.clone());

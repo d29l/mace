@@ -14,9 +14,12 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use egui::{Align2, Color32, CornerRadius, FontFamily, FontId, Rect, Response, Sense, Ui as EUi, pos2, vec2};
-use mace_proto::{Account, Config, Game, Menu, Node, Pin, PluginButton, PublicServer, ServerPage, Sort, State, Theme, ToMace};
+use mace_proto::{Account, Config, Game, Menu, Pin, PluginButton, PublicServer, ServerPage, Sort, State, Theme, ToMace};
 
 use crate::client::{self, Avatar};
+
+#[path = "blocks.rs"]
+mod blocks;
 
 /// Where the bar sits: its top edge and height (points).
 pub const BAR_TOP: f32 = 16.0;
@@ -338,6 +341,16 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                   color);
 }
 
+/// A smaller round icon button (24 points, a 16-point icon), for a card's slim strip.
+fn small_icon_button(ui: &mut EUi, c: Colors, icon: Icon, tip: &str, tint: Option<Color32>) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
+    if response.hovered() {
+        ui.painter().circle_filled(rect.center(), 12.0, c.hover);
+    }
+    paint_icon(ui.painter(), Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), icon, tint.unwrap_or(c.text));
+    response.on_hover_text(tip)
+}
+
 /// A round icon button (32 points, a 20-point icon) for rows and headers.
 fn icon_button(ui: &mut EUi, c: Colors, icon: Icon, tip: &str, tint: Option<Color32>) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
@@ -420,31 +433,6 @@ impl PluginAt<'_> {
             }));
         }
     }
-}
-
-/// A plugin's button: primary (filled with the accent), danger (red text) or
-/// plain, with an icon before the label if it has one.
-fn plugin_button(ui: &mut EUi, c: Colors, label: &str, style: &str, icon: Option<Icon>, enabled: bool) -> Response {
-    let font = regular(13.5);
-    let galley = ui.painter().layout_no_wrap(label.into(), font.clone(), c.text);
-    let icon_room = if icon.is_some() { 18.0 + 6.0 } else { 0.0 };
-    let size = vec2(galley.size().x + icon_room + 32.0, 36.0);
-    let (rect, response) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
-    let hovered = enabled && response.hovered();
-    let (fill, ink) = match style {
-        "primary" => (if hovered { c.accent.lerp_to_gamma(c.text, 0.25) } else { c.accent }, c.on_accent),
-        "danger" => (if hovered { c.hover.lerp_to_gamma(c.danger, 0.15) } else { c.hover }, c.danger),
-        _ => (if hovered { c.hover.lerp_to_gamma(c.text, 0.08) } else { c.hover }, c.text),
-    };
-    let ink = if enabled { ink } else { ink.gamma_multiply(0.5) };
-    ui.painter().rect_filled(rect, CornerRadius::same(10), fill);
-    let mut x = rect.min.x + 16.0;
-    if let Some(icon) = icon {
-        paint_icon(ui.painter(), Rect::from_center_size(pos2(x + 9.0, rect.center().y), vec2(18.0, 18.0)), icon, ink);
-        x += icon_room;
-    }
-    ui.painter().text(pos2(x, rect.center().y), Align2::LEFT_CENTER, label, font, ink);
-    response
 }
 
 fn small(ui: &mut EUi, c: Colors, text: &str) {
@@ -560,6 +548,8 @@ impl Card {
 
 /// The bar's own pin.
 const BAR_PIN: &str = "bar";
+/// A pinned card can't be made smaller than this.
+const MIN_CARD: egui::Vec2 = egui::vec2(220.0, 64.0);
 
 #[derive(Default)]
 struct Browser {
@@ -597,6 +587,12 @@ pub struct Ui {
     seen_pins: Option<Vec<Pin>>,
     /// A pinned card is being dragged: the config's pins wait.
     dragging: bool,
+    /// Where a progress bar was just seeked to, and when, by its place in its menu: shown until Mace's next menu.
+    seeks: HashMap<String, (f64, Instant)>,
+    /// The room each plugin menu was last said to have.
+    sizes: HashMap<(String, String), (f32, f32)>,
+    /// Where pinned things were drawn this frame: clicks there are theirs, the panel open or not.
+    pub hits: Vec<Rect>,
     /// Plugin pictures made into white masks, to draw as icons.
     masks: HashMap<String, (Avatar, egui::TextureHandle)>,
     /// What's typed in plugin menus' text fields: (the value Mace gave, the text now), by place in the menu.
@@ -748,7 +744,7 @@ impl Ui {
     fn set_pin(&mut self, id: &str, at: Option<egui::Pos2>, actions: &mut Vec<Action>) {
         self.pins.retain(|p| p.id != id);
         if let Some(at) = at {
-            self.pins.push(Pin { id: id.into(), x: at.x, y: at.y });
+            self.pins.push(Pin { id: id.into(), x: at.x, y: at.y, w: 0.0, h: 0.0 });
         }
         actions.push(Action::Send(ToMace::Pins { pins: self.pins.clone() }));
     }
@@ -781,8 +777,13 @@ impl Ui {
         {
             now.push(shown);
         }
-        let message = |(plugin, button): (String, String), what: &str| Action::Send(ToMace::Plugin {
-            plugin, button, key: String::new(), what: what.into(), value: None });
+        // an open says the room it has, when that's known already
+        let sizes = self.sizes.clone();
+        let message = |(plugin, button): (String, String), what: &str| {
+            let value = (what == "open").then(|| sizes.get(&(plugin.clone(), button.clone())))
+                .flatten().map(|(w, h)| serde_json::json!({ "width": w, "height": h }));
+            Action::Send(ToMace::Plugin { plugin, button, key: String::new(), what: what.into(), value })
+        };
         for was in self.told_open.clone() {
             if !now.contains(&was) {
                 actions.push(message(was, "close"));
@@ -829,6 +830,7 @@ impl Ui {
         let ctx = root.ctx().clone();
         let screen = ctx.content_rect();
 
+        self.hits.clear();
         self.sync_pins(d);
         // as at the start of the frame: one pinned in it shows from the next (or its pin would take the same click)
         let pinned_before = self.pins.clone();
@@ -854,23 +856,29 @@ impl Ui {
             let top = screen.min.y + BAR_TOP - (1.0 - slide) * (BAR_HEIGHT + BAR_TOP + 16.0);
             let bar = Rect::from_min_size(pos2(screen.center().x - width / 2.0, top), vec2(width, BAR_HEIGHT));
             self.bar(&ctx, c, d, bar, opacity, &mut actions);
+            if bar_pinned {
+                self.hits.push(bar);
+            }
             if open && let Some(card) = self.current_card().filter(|card| !self.is_pinned(&card.id())) {
                 // hangs from the bar's trailing end, under the buttons that open it
                 let w = f32::min(card.width(), bar.width());
                 let at = pos2(bar.max.x - w, bar.max.y + 8.0);
                 // never down to the bottom edge, where toasts show while the bar is open
                 let room = (screen.max.y - at.y - 120.0).clamp(160.0, 600.0);
-                self.card(&ctx, c, d, &card, Rect::from_min_size(at, vec2(w, room)), opacity, &mut actions);
+                self.card(&ctx, c, d, &card, Rect::from_min_size(at, vec2(w, room)), false, opacity, &mut actions);
             }
         }
         // what's pinned stays where it was put (inside the screen), the panel open or not
         for pin in pinned_before {
             let Some(card) = Card::from_id(&pin.id).filter(|card| Self::card_exists(card, d)) else { continue };
-            let w = card.width().min(screen.width() - 32.0);
+            // its own size once resized, else as it comes
+            let w = if pin.w > 0.0 { pin.w } else { card.width() }.clamp(MIN_CARD.x, (screen.width() - 16.0).max(MIN_CARD.x));
             let x = pin.x.clamp(screen.min.x + 8.0, (screen.max.x - w - 8.0).max(screen.min.x + 8.0));
-            let y = pin.y.clamp(screen.min.y + 8.0, (screen.max.y - 120.0).max(screen.min.y + 8.0));
-            let room = (screen.max.y - y - 16.0).clamp(120.0, 600.0);
-            self.card(&ctx, c, d, &card, Rect::from_min_size(pos2(x, y), vec2(w, room)), 1.0, &mut actions);
+            let y = pin.y.clamp(screen.min.y + 8.0, (screen.max.y - MIN_CARD.y - 8.0).max(screen.min.y + 8.0));
+            let fixed = pin.h > 0.0;
+            let h = if fixed { pin.h.clamp(MIN_CARD.y, (screen.max.y - y - 8.0).max(MIN_CARD.y)) }
+                    else { (screen.max.y - y - 16.0).clamp(120.0, 600.0) };
+            self.card(&ctx, c, d, &card, Rect::from_min_size(pos2(x, y), vec2(w, h)), fixed, 1.0, &mut actions);
         }
         self.tell_plugin_menu(progress > 0.0, d, &mut actions);
         self.draw_toasts(&ctx, c, screen, progress > 0.0);
@@ -1007,33 +1015,50 @@ impl Ui {
     }
 
     /// A drop-down's card: hanging from the bar, or pinned where it was put
-    /// (then dragged by its top while the panel is open). Its pin is in its top right corner.
+    /// (then moved by its top, and resized by its corner). Its pin is at its top
+    /// right. A plugin menu with no title gets a slim strip on top (a grip and
+    /// the pin) instead of a header.
     #[allow(clippy::too_many_arguments)]
-    fn card(&mut self, ctx: &egui::Context, c: Colors, d: &Snapshot, card: &Card, room: Rect, opacity: f32,
+    fn card(&mut self, ctx: &egui::Context, c: Colors, d: &Snapshot, card: &Card, room: Rect, fixed: bool, opacity: f32,
             actions: &mut Vec<Action>) {
         let id = card.id();
         let pinned = self.is_pinned(&id);
+        let strip = match card {
+            Card::Plugin(p, b) => d.menus.get(&(p.clone(), b.clone())).is_some_and(|(menu, _)| menu.title.is_empty()),
+            _ => false,
+        };
+        let (margin, top) = if strip { (14.0, 28.0) } else { (20.0, 20.0) };
         egui::Area::new(egui::Id::unique(("mace-card", &id))).order(egui::Order::Foreground).fade_in(false).constrain(false)
             .fixed_pos(room.min)
             .show(ctx, |ui| {
                 ui.set_opacity(opacity);
-                let margin = 20.0;
-                let frame = egui::Frame::new().fill(c.background).corner_radius(CornerRadius::same(20)).inner_margin(margin)
-                    .shadow(shadow())
+                let inner = egui::Margin { left: margin as i8, right: margin as i8, top: top as i8, bottom: margin as i8 };
+                let frame = egui::Frame::new().fill(c.background).corner_radius(CornerRadius::same(if strip { 16 } else { 20 }))
+                    .inner_margin(inner).shadow(shadow())
                     .show(ui, |ui| {
-                        ui.set_width(room.width() - 2.0 * margin);
-                        ui.set_max_height(room.height() - 2.0 * margin);
+                        let (width, height) = (room.width() - 2.0 * margin, room.height() - top - margin);
+                        ui.set_width(width);
+                        ui.set_max_height(height);
+                        if fixed {
+                            ui.set_min_height(height);
+                        }
                         match card {
                             Card::Servers => self.servers(ui, c, d, actions),
                             Card::Alts => self.alts(ui, c, d, actions),
                             Card::Games => self.games(ui, c, d, actions),
-                            Card::Plugin(plugin, button) => self.plugin_menu(ui, c, d, plugin, button, actions),
+                            Card::Plugin(plugin, button) => {
+                                // plugins hear the room their menu has (0 high: as tall as it needs)
+                                self.tell_size(plugin, button, width, if fixed { height } else { 0.0 }, actions);
+                                self.plugin_menu(ui, c, d, plugin, button, actions);
+                            }
                         }
                     });
                 let rect = frame.response.rect;
-                // a pinned card moves by its top
                 if pinned {
-                    let handle = Rect::from_min_size(rect.min, vec2(rect.width() - 64.0, 52.0));
+                    // clicks here are the card's, even with the panel closed
+                    self.hits.push(rect);
+                    // moved by its top
+                    let handle = Rect::from_min_size(rect.min, vec2(rect.width() - 52.0, if strip { top } else { 52.0 }));
                     let drag = ui.interact(handle, ui.scope_id().with("drag"), Sense::drag());
                     if drag.dragged() {
                         self.dragging = true;
@@ -1047,13 +1072,46 @@ impl Ui {
                         self.dragging = false;
                         actions.push(Action::Send(ToMace::Pins { pins: self.pins.clone() }));
                     }
+                    // resized by its corner
+                    let corner = Rect::from_min_size(rect.max - vec2(18.0, 18.0), vec2(18.0, 18.0));
+                    let resize = ui.interact(corner, ui.scope_id().with("resize"), Sense::drag());
+                    let ink = if resize.hovered() || resize.dragged() { c.text } else { c.subtext.gamma_multiply(0.6) };
+                    for step in [5.0, 9.0] {
+                        ui.painter().line_segment([pos2(rect.max.x - 5.0, rect.max.y - step), pos2(rect.max.x - step, rect.max.y - 5.0)],
+                                                  egui::Stroke::new(1.5, ink));
+                    }
+                    if resize.dragged() {
+                        self.dragging = true;
+                        let delta = resize.drag_delta();
+                        if let Some(pin) = self.pins.iter_mut().find(|p| p.id == id) {
+                            let (w, h) = (if pin.w > 0.0 { pin.w } else { rect.width() }, if pin.h > 0.0 { pin.h } else { rect.height() });
+                            pin.w = (w + delta.x).max(MIN_CARD.x);
+                            pin.h = (h + delta.y).max(MIN_CARD.y);
+                        }
+                    }
+                    if resize.drag_stopped() {
+                        self.dragging = false;
+                        actions.push(Action::Send(ToMace::Pins { pins: self.pins.clone() }));
+                    }
                 }
-                let at = Rect::from_min_size(pos2(rect.max.x - 14.0 - 32.0, rect.min.y + 14.0), vec2(32.0, 32.0));
+                if strip {
+                    // a grip: what to hold to move it
+                    let grip = pos2(rect.center().x, rect.min.y + 14.0);
+                    for (dx, dy) in [(-5.0, -2.0), (0.0, -2.0), (5.0, -2.0), (-5.0, 2.0), (0.0, 2.0), (5.0, 2.0)] {
+                        ui.painter().circle_filled(grip + vec2(dx, dy), 1.2, c.subtext.gamma_multiply(0.8));
+                    }
+                }
+                let (side, inset) = if strip { (24.0, 4.0) } else { (32.0, 14.0) };
+                let at = Rect::from_min_size(pos2(rect.max.x - inset - side - if strip { 6.0 } else { 0.0 }, rect.min.y + inset), vec2(side, side));
                 let mut corner = ui.new_child(egui::UiBuilder::new().max_rect(at));
                 let tint = if pinned { Some(c.text) } else { Some(c.subtext) };
-                if icon_button(&mut corner, c, Icon::Named("push_pin"), if pinned { "Unpin" } else { "Keep on screen" }, tint)
-                    .clicked()
-                {
+                let tip = if pinned { "Unpin" } else { "Keep on screen" };
+                let clicked = if strip {
+                    small_icon_button(&mut corner, c, Icon::Named("push_pin"), tip, tint).clicked()
+                } else {
+                    icon_button(&mut corner, c, Icon::Named("push_pin"), tip, tint).clicked()
+                };
+                if clicked {
                     if pinned {
                         self.set_pin(&id, None, actions);
                     } else {
@@ -1063,6 +1121,20 @@ impl Ui {
                     }
                 }
             });
+    }
+
+    /// Tell a plugin the room its menu has, when that changed.
+    fn tell_size(&mut self, plugin: &str, button: &str, width: f32, height: f32, actions: &mut Vec<Action>) {
+        let key = (plugin.to_string(), button.to_string());
+        let size = (width.round(), height.round());
+        if self.sizes.get(&key) == Some(&size) {
+            return;
+        }
+        self.sizes.insert(key, size);
+        actions.push(Action::Send(ToMace::Plugin {
+            plugin: plugin.into(), button: button.into(), key: String::new(), what: "size".into(),
+            value: Some(serde_json::json!({ "width": size.0, "height": size.1 })),
+        }));
     }
 
     fn alts(&mut self, ui: &mut EUi, c: Colors, d: &Snapshot, actions: &mut Vec<Action>) {
@@ -1207,192 +1279,6 @@ impl Ui {
     }
 
     // -- the server browser
-
-    /// A plugin's drop-down: its menu as Mace last sent it, drawn from the blocks in it.
-    fn plugin_menu(&mut self, ui: &mut EUi, c: Colors, d: &Snapshot, plugin: &str, button: &str,
-                   actions: &mut Vec<Action>) {
-        let (plugin, button) = (plugin.to_string(), button.to_string());
-        ui.spacing_mut().item_spacing.y = 2.0;
-        // the title stops short of the card's pin
-        let header = ui.available_width() - 40.0;
-        let Some((menu, arrived)) = d.menus.get(&(plugin.clone(), button.clone())).cloned() else {
-            let tip = d.plugins.iter().find(|p| p.plugin == plugin && p.id == button).map_or("", |p| p.tip.as_str());
-            ui.scope(|ui| {
-                ui.set_max_width(header);
-                title(ui, c, tip, 16.0);
-                small(ui, c, "Loading…");
-            });
-            return;
-        };
-        ui.scope(|ui| {
-            ui.set_max_width(header);
-            title(ui, c, &menu.title, 16.0);
-            if let Some(subtitle) = menu.subtitle.as_deref().filter(|s| !s.is_empty()) {
-                small(ui, c, subtitle);
-            }
-        });
-        ui.add_space(8.0);
-        let height = (ui.max_rect().bottom() - ui.cursor().top()).max(80.0);
-        egui::ScrollArea::vertical().auto_shrink([false, true]).max_height(height).show(ui, |ui| {
-            ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-            let at = PluginAt { plugin: &plugin, button: &button, arrived };
-            for (i, node) in menu.children.iter().enumerate() {
-                self.plugin_node(ui, c, d, node, &at, &i.to_string(), actions);
-            }
-        });
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn plugin_node(&mut self, ui: &mut EUi, c: Colors, d: &Snapshot, node: &Node, at: &PluginAt, path: &str,
-                   actions: &mut Vec<Action>) {
-        match node {
-            Node::Text { text, style } => {
-                let (font, color) = match style.as_str() {
-                    "title" => (bold(15.0), c.text),
-                    "subtle" => (regular(12.5), c.subtext),
-                    _ => (regular(13.5), c.text),
-                };
-                ui.add(egui::Label::new(egui::RichText::new(text).font(font).color(color)).wrap());
-            }
-            Node::Button { label, style, icon, key } => {
-                let icon = icon.as_deref().map(|i| self.plugin_icon(ui.ctx(), i, &d.avatars));
-                if plugin_button(ui, c, label, style, icon, key.is_some()).clicked() {
-                    at.send(actions, key, "click", None);
-                }
-            }
-            Node::Row { icon, image, title, subtitle, key, trailing } => {
-                let height = if subtitle.as_deref().is_some_and(|s| !s.is_empty()) { 56.0 } else { 44.0 };
-                let sense = if key.is_some() { Sense::click() } else { Sense::hover() };
-                let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), height), sense);
-                if key.is_some() && response.hovered() {
-                    ui.painter().rect_filled(rect, CornerRadius::same(12), c.hover);
-                }
-                let picture = Rect::from_center_size(pos2(rect.min.x + 12.0 + 18.0, rect.center().y), vec2(36.0, 36.0));
-                let mut x = rect.min.x + 12.0;
-                if let Some(texture) = image.as_deref().and_then(|i| self.texture(ui.ctx(), i, &d.avatars)) {
-                    egui::Image::new((texture, picture.size())).corner_radius(CornerRadius::same(8)).paint_at(ui, picture);
-                    x = picture.max.x + 12.0;
-                } else if let Some(icon) = icon.as_deref() {
-                    let icon = self.plugin_icon(ui.ctx(), icon, &d.avatars);
-                    ui.painter().circle_filled(picture.center(), 18.0, c.surface);
-                    paint_icon(ui.painter(), picture.shrink(8.0), icon, c.text);
-                    x = picture.max.x + 12.0;
-                }
-                let trailing_room = if trailing.is_some() { 120.0 } else { 0.0 };
-                two_lines_at(ui.painter(), c, x, rect.center().y, rect.max.x - 12.0 - trailing_room - x, title,
-                             subtitle.as_deref().unwrap_or(""), 14.0);
-                if let Some(trailing) = trailing {
-                    let mut end = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(8.0, 4.0)))
-                        .layout(egui::Layout::right_to_left(egui::Align::Center)));
-                    self.plugin_node(&mut end, c, d, trailing, at, &format!("{path}.t"), actions);
-                }
-                if response.clicked() {
-                    at.send(actions, key, "click", None);
-                }
-            }
-            Node::Toggle { label, value, key } => {
-                let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
-                if response.hovered() {
-                    ui.painter().rect_filled(rect, CornerRadius::same(12), c.hover);
-                }
-                let switch = Rect::from_center_size(pos2(rect.max.x - 12.0 - 18.0, rect.center().y), vec2(36.0, 20.0));
-                let label_room = switch.min.x - 12.0 - (rect.min.x + 12.0);
-                let galley = line(ui.painter(), label, regular(13.5), c.text, label_room);
-                ui.painter().galley(pos2(rect.min.x + 12.0, rect.center().y - galley.size().y / 2.0), galley, c.text);
-                let track = if *value { c.accent } else { c.hover.lerp_to_gamma(c.text, 0.18) };
-                ui.painter().rect_filled(switch, CornerRadius::same(10), track);
-                let knob_x = if *value { switch.max.x - 10.0 } else { switch.min.x + 10.0 };
-                ui.painter().circle_filled(pos2(knob_x, switch.center().y), 7.0, if *value { c.on_accent } else { c.text });
-                if response.clicked() {
-                    at.send(actions, key, "change", Some(serde_json::Value::Bool(!value)));
-                }
-            }
-            Node::Input { placeholder, value, key } => {
-                let entry = self.inputs.entry(format!("{}/{}/{path}", at.plugin, at.button))
-                    .or_insert_with(|| (value.clone(), value.clone()));
-                if entry.0 != *value {
-                    *entry = (value.clone(), value.clone());
-                }
-                let response = ui.scope(|ui| {
-                    // no outlines: a field is a surface, like the rest
-                    let visuals = ui.visuals_mut();
-                    for state in [&mut visuals.widgets.inactive, &mut visuals.widgets.hovered, &mut visuals.widgets.active] {
-                        state.bg_stroke = egui::Stroke::NONE;
-                        state.corner_radius = CornerRadius::same(10);
-                    }
-                    visuals.selection.stroke = egui::Stroke::NONE;
-                    visuals.selection.bg_fill = c.accent.gamma_multiply(0.35);
-                    visuals.text_cursor.stroke = egui::Stroke::new(1.5, c.text);
-                    ui.add(egui::TextEdit::singleline(&mut entry.1)
-                        .hint_text(egui::RichText::new(placeholder).font(regular(13.5)).color(c.subtext))
-                        .font(regular(13.5)).text_color(c.text).background_color(c.surface)
-                        .margin(vec2(12.0, 9.0)).desired_width(f32::INFINITY))
-                }).inner;
-                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    let text = entry.1.clone();
-                    at.send(actions, key, "submit", Some(serde_json::Value::String(text)));
-                }
-            }
-            Node::Stack { direction, gap, children } => {
-                let gap = match gap.as_str() {
-                    "small" => 4.0,
-                    "medium" => 12.0,
-                    _ => 8.0,
-                };
-                let mut draw = |ui: &mut EUi| {
-                    ui.spacing_mut().item_spacing = vec2(gap, gap);
-                    for (i, child) in children.iter().enumerate() {
-                        self.plugin_node(ui, c, d, child, at, &format!("{path}.{i}"), actions);
-                    }
-                };
-                if direction == "row" {
-                    ui.horizontal_wrapped(|ui| draw(ui));
-                } else {
-                    ui.vertical(|ui| draw(ui));
-                }
-            }
-            Node::Space { size } => ui.add_space(if size == "medium" { 16.0 } else { 8.0 }),
-            Node::Progress { value, max, rate, times } => {
-                // moves on by itself between menus (a song playing), so it's smooth
-                let now = (value + rate * at.arrived.elapsed().as_secs_f64()).clamp(0.0, max.max(0.0));
-                let filled = if *max > 0.0 { (now / max) as f32 } else { 0.0 };
-                let height = if *times { 26.0 } else { 6.0 };
-                let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
-                let track = Rect::from_min_size(rect.min + vec2(0.0, 1.0), vec2(rect.width(), 4.0));
-                ui.painter().rect_filled(track, CornerRadius::same(2), c.hover.lerp_to_gamma(c.text, 0.12));
-                ui.painter().rect_filled(Rect::from_min_size(track.min, vec2(track.width() * filled, 4.0)),
-                                         CornerRadius::same(2), c.accent);
-                if *times {
-                    let clock = |s: f64| format!("{}:{:02}", (s as u64) / 60, (s as u64) % 60);
-                    let painter = ui.painter();
-                    painter.text(pos2(rect.min.x, rect.max.y), Align2::LEFT_BOTTOM, clock(now), regular(11.5), c.subtext);
-                    painter.text(rect.max, Align2::RIGHT_BOTTOM, clock(*max), regular(11.5), c.subtext);
-                }
-                // keep moving while shown
-                if *rate != 0.0 {
-                    ui.ctx().request_repaint();
-                }
-            }
-            Node::Image { image, size } => {
-                let side = match size.as_str() {
-                    "small" => 48.0,
-                    "large" => 160.0,
-                    _ => 96.0,
-                };
-                let (rect, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
-                match self.texture(ui.ctx(), image, &d.avatars) {
-                    Some(texture) => {
-                        egui::Image::new((texture, rect.size())).corner_radius(CornerRadius::same(12)).paint_at(ui, rect);
-                    }
-                    // still on its way
-                    None => {
-                        ui.painter().rect_filled(rect, CornerRadius::same(12), c.surface);
-                    }
-                }
-            }
-            Node::Unknown => {}
-        }
-    }
 
     fn open_browser(&mut self, actions: &mut Vec<Action>, place: &str) {
         self.open_drop(Drop::Servers);
@@ -1635,6 +1521,7 @@ mod tests {
 mod clicks {
     use super::*;
     use egui::Pos2;
+    use mace_proto::Node;
 
     fn snapshot(toasts: Vec<(String, String)>) -> Snapshot {
         let me = Account { id: "main".into(), name: "Main".into(), running: true, ..Default::default() };
@@ -1736,7 +1623,10 @@ mod clicks {
 
     fn sent_plugin(actions: &[Action]) -> Vec<(String, String, Option<serde_json::Value>)> {
         actions.iter().filter_map(|a| match a {
-            Action::Send(ToMace::Plugin { key, what, value, .. }) => Some((key.clone(), what.clone(), value.clone())),
+            // the room it has is said along the way; these tests are about the rest
+            Action::Send(ToMace::Plugin { what, .. }) if what == "size" => None,
+            Action::Send(ToMace::Plugin { key, what, value, .. }) =>
+                Some((key.clone(), what.clone(), if what == "open" { None } else { value.clone() })),
             _ => None,
         }).collect()
     }
@@ -1783,7 +1673,7 @@ mod clicks {
         let mut deltas = ctx.run_ui(raw, |root| {
             egui::Area::new(egui::Id::unique("block")).order(egui::Order::Foreground).fade_in(false).constrain(false).fixed_pos(Pos2::ZERO).show(root.ctx(), |area| {
                 area.set_width(300.0);
-                ui.plugin_node(area, Colors::of(&Theme::default()), &data, node, &at, "0", &mut actions);
+                ui.block(area, Colors::of(&Theme::default()), &data, node, &at, "0", &mut actions);
             });
         }).textures_delta;
         deltas.clear();
@@ -1802,7 +1692,7 @@ mod clicks {
         let ctx = egui::Context::default();
         setup(&ctx);
         let mut ui = Ui::default();
-        let button = Node::Button { label: "Go".into(), style: "primary".into(), icon: Some("bolt".into()), key: Some("k1".into()) };
+        let button = Node::Button { label: "Go".into(), style: "primary".into(), size: String::new(), icon: Some("bolt".into()), key: Some("k1".into()) };
         assert_eq!(sent_plugin(&click_block(&ctx, &mut ui, &button, pos2(12.0, 18.0))), [("k1".into(), "click".into(), None)]);
         let toggle = Node::Toggle { label: "Loud".into(), value: false, key: Some("k2".into()) };
         assert_eq!(sent_plugin(&click_block(&ctx, &mut ui, &toggle, pos2(150.0, 20.0))),
@@ -1811,7 +1701,7 @@ mod clicks {
                               key: Some("k3".into()), trailing: None };
         assert_eq!(sent_plugin(&click_block(&ctx, &mut ui, &row, pos2(150.0, 28.0))), [("k3".into(), "click".into(), None)]);
         // no key: nothing to say
-        let inert = Node::Button { label: "Off".into(), style: String::new(), icon: None, key: None };
+        let inert = Node::Button { label: "Off".into(), style: String::new(), size: String::new(), icon: None, key: None };
         assert!(sent_plugin(&click_block(&ctx, &mut ui, &inert, pos2(12.0, 18.0))).is_empty());
         // typing, then Enter
         let input = Node::Input { placeholder: "Say".into(), value: String::new(), key: Some("k4".into()) };
@@ -1912,5 +1802,32 @@ mod clicks {
         let actions = clicked(&ctx, &mut ui, pos2(x, BAR_TOP + BAR_HEIGHT / 2.0));
         assert_eq!(sent_pins(&actions), Some(vec!["bar".to_string()]));
         assert!(ui.is_pinned(BAR_PIN));
+    }
+
+    #[test]
+    fn rows_grow_centre_and_overlays_reveal() {
+        let ctx = egui::Context::default();
+        setup(&ctx);
+        let mut ui = Ui::default();
+        // a block that grows pushes the button to the row's end (the column is 300 wide)
+        let row: Node = serde_json::from_str(r#"{"type":"stack","direction":"row","children":[
+            {"type":"stack","grow":true,"children":[{"type":"text","text":"A title","lines":1}]},
+            {"type":"button","label":"","icon":"star","size":"medium","key":"end"}]}"#).unwrap();
+        assert_eq!(sent_plugin(&click_block(&ctx, &mut ui, &row, pos2(300.0 - 18.0, 18.0))), [("end".into(), "click".into(), None)]);
+        // centred: in the middle
+        let centred: Node = serde_json::from_str(r#"{"type":"stack","direction":"row","align":"center","children":[
+            {"type":"button","label":"","icon":"star","size":"medium","key":"mid"}]}"#).unwrap();
+        assert_eq!(sent_plugin(&click_block(&ctx, &mut ui, &centred, pos2(150.0, 18.0))), [("mid".into(), "click".into(), None)]);
+        assert!(sent_plugin(&click_block(&ctx, &mut ui, &centred, pos2(18.0, 18.0))).is_empty());
+        // revealed on hover: over the picture, the button on it is there to click
+        let overlay: Node = serde_json::from_str(r#"{"type":"overlay","reveal":"hover","children":[
+            {"type":"image","image":"none","size":"120"},
+            {"type":"stack","direction":"row","align":"center","children":[
+                {"type":"button","label":"","icon":"play_arrow","style":"primary","size":"huge","key":"play"}]}]}"#).unwrap();
+        assert_eq!(sent_plugin(&click_block(&ctx, &mut ui, &overlay, pos2(60.0, 60.0))), [("play".into(), "click".into(), None)]);
+        // a seek: the bar's middle is half of it
+        let bar = Node::Progress { value: 0.0, max: 200.0, rate: 0.0, times: false, key: Some("seek".into()) };
+        assert_eq!(sent_plugin(&click_block(&ctx, &mut ui, &bar, pos2(150.0, 6.0))),
+                   [("seek".into(), "change".into(), Some(serde_json::json!(100.0)))]);
     }
 }

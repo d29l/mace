@@ -159,7 +159,7 @@ local button = mace.bar.button({
     icon = "star",       -- see Icons
     tip = "Hello",       -- shown on hover (default: the plugin's name)
     badge = 3,           -- a small number on it (optional)
-    menu = function()    -- what its drop-down shows (optional)
+    menu = function(room) -- what its drop-down shows (optional; room: see Menus)
         return mace.ui.menu({ title = "Hello" }, { mace.ui.text("Hi!") })
     end,
 })
@@ -176,8 +176,10 @@ The bar has room for 4 plugin buttons, beside Mace's own.
   game, so refreshing often is cheap.
 
 Players can pin a menu (the pin in its corner): it then stays on screen
-while they play, where they dragged it, and your menu function keeps being
-called as if it were open. Keep pinnable menus small.
+while they play, where they put it, at the size they made it (by its
+corner), and your menu function keeps being called as if it were open.
+While the mouse is free (not held by the game's camera), a pinned menu can
+be clicked without opening the bar; typing into it needs the bar open.
 
 ### Timers
 
@@ -270,18 +272,24 @@ end)
 
 A menu function returns `ui.menu(...)` with building blocks inside. Mace
 draws them in its own style, so every plugin looks like part of Mace: there
-are no colours or sizes to set, only names.
+are no colours to set, only names, and sizes come from names too.
 
 ```lua
 local ui = mace.ui
 
 ui.menu({ title = "Title", subtitle = "a line under it" }, {
-    ui.text("Hello", { style = "normal" }),          -- "normal", "subtle" or "title"
+    ui.text("Hello", {
+        style = "normal",                            -- "normal", "subtle" or "title" (bold)
+        size = "large",                              -- "small", "normal", "large" or "huge" (optional)
+        lines = 1,                                   -- at most this many, cut with … (optional)
+    }),
     ui.button("Go", {
-        style = "primary",                           -- "primary", "secondary" or "danger"
+        style = "primary",                           -- "primary", "secondary", "plain" or "danger"
         icon = "bolt",                               -- optional
+        size = "medium",                             -- "small", "medium", "large" or "huge"
         onClick = function() … end,
     }),
+    ui.button("", { icon = "skip_next", style = "plain" }), -- no label: a round icon button
     ui.row({
         icon = "star",                               -- or image = "picture.png"
         title = "A row",
@@ -291,23 +299,63 @@ ui.menu({ title = "Title", subtitle = "a line under it" }, {
     }),
     ui.toggle("Sound", { value = true, onChange = function(on) … end }),
     ui.input({ placeholder = "Type here", value = "", onSubmit = function(text) … end }), -- Enter submits
-    ui.stack({ ui.button("A"), ui.button("B") }, { direction = "row", gap = "small" }),  -- "row" or "column"; "small" or "medium"
-    ui.space("medium"),                              -- "small" or "medium"
-    ui.progress(31, 215, { rate = 1, times = true }), -- see below
-    ui.image("https://i.scdn.co/image/…", { size = "medium" }), -- "small", "medium" or "large"
+    ui.stack({ ui.button("A"), ui.button("B") }, {
+        direction = "row",                           -- "row" or "column" (the default)
+        gap = "small",                               -- "none", "small", "medium" or "large"
+        align = "center",                            -- "start", "center" or "end"
+        grow = false,                                -- in a row: take the room the others leave
+    }),
+    ui.overlay({ ui.image(cover, { size = "fill" }), controls }, { reveal = "hover" }), -- see below
+    ui.space("medium"),                              -- "small", "medium" or "large"
+    ui.progress(31, 215, { rate = 1, times = true, onSeek = function(to) … end }), -- see below
+    ui.image("https://i.scdn.co/image/…", { size = "medium" }), -- see below
 })
 ```
 
 A plain string in a list is the same as `ui.text(string)`.
 
-`ui.progress(value, max, { rate, times })` is a bar from 0 to `max`, at
-`value` when drawn. It moves on by `rate` a second by itself, smoothly, so a
-song's progress needs no redrawing: `rate = 1` while it plays, `0` when it's
-paused. With `times = true` it shows `0:31` and `3:35` under it.
+**Laying things out.** A column puts blocks under each other; a row puts
+them side by side, lined up across their middles. In a row, blocks that fill
+(a progress bar, a text field, a row, a toggle, a picture with `size =
+"fill"`, or a stack with `grow = true`) share the room the others leave, so
+`ui.stack({ cover, ui.stack({ title, artist }, { grow = true }), buttons }, {
+direction = "row" })` puts the buttons at the far end. `align = "center"`
+centres a row's blocks (or, in a column, each block).
 
-`ui.image(picture)` and a row's `image` are a PNG in the plugin's folder, or
-an `https://` picture from one of its sites (any common format; drawn square,
-cropped to its middle).
+**On top of each other.** `ui.overlay(blocks, { align, reveal })` draws the
+first block, then the others over it (`align`: "start", "center" or "end",
+top to bottom). With `reveal = "hover"`, the others only show while the
+pointer is over it, and the first is darkened under them: controls on a cover.
+
+**Progress.** `ui.progress(value, max, { rate, times, onSeek })` is a bar
+from 0 to `max`, at `value` when drawn. It moves on by `rate` a second by
+itself, smoothly, so a song's progress needs no redrawing: `rate = 1` while
+it plays, `0` when it's paused. With `times = true` it shows `0:31` and
+`3:35` under it. With `onSeek`, clicking or dragging it calls that with the
+value picked.
+
+**Pictures.** `ui.image(picture, { size })` and a row's `image` are a PNG in
+the plugin's folder, or an `https://` picture from one of its sites (any
+common format; drawn square, cropped to its middle). `size` is "small" (48),
+"medium" (96, the default), "large" (160), "fill" (as wide as there's room
+for), or a number of points.
+
+**No title.** A menu without a title has no header: its card gets a slim
+strip on top instead, with a grip to move it and its pin.
+
+**Its size.** The menu function gets the room its menu has, `{ width,
+height }` in points, and is called again when that changes (the player
+resized it). `height` is 0 when the menu may be as tall as it needs (a
+drop-down, or a pinned card not resized yet). Use it to pick a layout:
+
+```lua
+menu = function(room)
+    if room.height > 0 and room.height >= room.width then
+        return tall(room)  -- e.g. a big cover with controls on it
+    end
+    return strip(room)     -- e.g. a cover, the words, the controls in a row
+end
+```
 
 The menu is drawn when it opens, and again after each control is used, so
 read your state inside the menu function and it stays current. A menu has at

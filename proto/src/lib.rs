@@ -29,9 +29,10 @@ pub enum ToMace {
     /// What's pinned now, and where: Mace keeps it for every game.
     Pins { pins: Vec<Pin> },
     /// Something done to a plugin's menu: `open` and `close` (the drop-down
-    /// of the plugin's `button`), `click`, `change` (a toggle: `value` is the
-    /// new bool) and `submit` (an input: `value` is the text), for the control
-    /// whose `key` it is.
+    /// of the plugin's `button`; `open` and `size` give the room it has as
+    /// `{width, height}`), `click`, `change` (a toggle: `value` is the new
+    /// bool; a progress bar or player seeking: the seconds) and `submit` (an
+    /// input: `value` is the text), for the control whose `key` it is.
     Plugin {
         plugin: String,
         button: String,
@@ -101,6 +102,11 @@ pub struct Pin {
     pub x: f32,
     #[serde(default)]
     pub y: f32,
+    /// The card's size, once resized (0: as it comes).
+    #[serde(default)]
+    pub w: f32,
+    #[serde(default)]
+    pub h: f32,
 }
 
 /// A key and its modifiers, by physical position (SDL scancodes).
@@ -270,13 +276,26 @@ pub struct Menu {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Node {
-    /// `style`: normal, subtle or title.
-    Text { text: String, #[serde(default)] style: String },
-    /// `style`: primary, secondary or danger.
+    /// `style`: normal, subtle or title; `size`: small, normal, large or huge
+    /// (the style's own when empty); `lines`: at most that many, cut short
+    /// with an ellipsis (0: as many as it takes).
+    Text {
+        text: String,
+        #[serde(default)]
+        style: String,
+        #[serde(default)]
+        size: String,
+        #[serde(default)]
+        lines: u32,
+    },
+    /// `style`: primary, secondary, plain (no background) or danger. With no
+    /// label it's a round icon button; `size`: small, medium, large or huge.
     Button {
         label: String,
         #[serde(default)]
         style: String,
+        #[serde(default)]
+        size: String,
         #[serde(default)]
         icon: Option<String>,
         #[serde(default)]
@@ -310,13 +329,29 @@ pub enum Node {
         #[serde(default)]
         key: Option<String>,
     },
-    /// `direction`: column (the default) or row; `gap`: small or medium.
+    /// `direction`: column (the default) or row; `gap`: none, small, medium or
+    /// large; `align`: start, center or end (along a row; across a column);
+    /// `grow`: in a row, it takes the room the others leave.
     Stack {
         #[serde(default)]
         direction: String,
         #[serde(default)]
         gap: String,
+        #[serde(default)]
+        align: String,
+        #[serde(default)]
+        grow: bool,
         children: Vec<Node>,
+    },
+    /// Blocks on top of each other: the first sets the size, the rest are laid
+    /// over it (`align`: start, center or end, top to bottom). `reveal`: hover
+    /// shows them only while the pointer is over it, the first darkened.
+    Overlay {
+        children: Vec<Node>,
+        #[serde(default)]
+        align: String,
+        #[serde(default)]
+        reveal: String,
     },
     /// `size`: small or medium.
     Space { #[serde(default)] size: String },
@@ -330,9 +365,13 @@ pub enum Node {
         rate: f64,
         #[serde(default)]
         times: bool,
+        /// Clicking or dragging it seeks: `change` with the value.
+        #[serde(default)]
+        key: Option<String>,
     },
     /// A picture on its own: a file of the plugin's or one from its sites,
-    /// sent as an `Avatar`; `size`: small, medium (the default) or large.
+    /// sent as an `Avatar`; `size`: small, medium (the default), large, fill
+    /// (as wide as there's room for) or a number of points. Square.
     Image {
         image: String,
         #[serde(default)]
@@ -341,6 +380,13 @@ pub enum Node {
     /// What an older panel gets for a block a newer Mace has: nothing.
     #[serde(other)]
     Unknown,
+}
+
+impl Node {
+    /// Plain text in a style (normal, subtle, title).
+    pub fn text(text: impl Into<String>, style: &str) -> Node {
+        Node::Text { text: text.into(), style: style.into(), size: String::new(), lines: 0 }
+    }
 }
 
 impl ToMace {
