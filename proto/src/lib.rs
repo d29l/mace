@@ -178,7 +178,8 @@ pub struct PublicServer {
     pub playing: u32,
     pub max: u32,
     pub fps: Option<f32>,
-    /// The average ping of the players in it, not yours.
+    /// Your ping there (milliseconds), known only for servers one of your
+    /// accounts has connected to.
     pub ping: Option<u32>,
     /// Known only for servers one of your accounts has been in.
     pub location: Option<String>,

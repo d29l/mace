@@ -874,9 +874,8 @@ impl Ui {
         let others: Vec<PublicServer> = self.browser.list.iter().filter(|s| s.id != here).cloned().collect();
         let emptiest = others.iter().filter(|s| s.playing > 0).min_by_key(|s| s.playing).cloned();
         let fullest = others.iter().filter(|s| s.playing < s.max).max_by_key(|s| s.playing).cloned();
-        let closest = others.iter().filter(|s| s.ping.is_some()).min_by_key(|s| s.ping).cloned();
         ui.horizontal_wrapped(|ui| {
-            for (label, pick) in [("Emptiest", emptiest), ("Fullest", fullest), ("Lowest ping", closest)] {
+            for (label, pick) in [("Emptiest", emptiest), ("Fullest", fullest)] {
                 let response = ui.add_enabled_ui(pick.is_some(), |ui| text_button(ui, c, label, false)).inner;
                 if response.clicked()
                     && let Some(server) = pick
@@ -994,7 +993,7 @@ fn server_row(ui: &mut EUi, c: Colors, s: &PublicServer, here: bool) -> Response
     let filled = if s.max > 0 { (s.playing as f32 / s.max as f32).clamp(0.0, 1.0) } else { 0.0 };
     ui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * filled, bar.height())), CornerRadius::same(3), c.accent);
     ui.painter().text(pos2(bar.min.x, inner.max.y), Align2::LEFT_BOTTOM, format!("{}/{}", s.playing, s.max), regular(12.5), c.subtext);
-    // the server's id; under it the ping, and the place when one of your accounts has been there
+    // the server's id; under it your ping and its place, when one of your accounts has been there
     let mut facts: Vec<String> = s.ping.map(|ping| format!("~{ping} ms")).into_iter().collect();
     facts.extend(s.location.as_deref().map(plain_location).filter(|p| !p.is_empty()));
     let facts = facts.join(" · ");

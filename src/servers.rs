@@ -29,6 +29,11 @@ static STAMP: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?)Z,([0-9.]+),").unwrap());
 pub static PLAYER_LOG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_Player_[0-9a-f]+_last\.log$").unwrap());
 const TELEPORT_GRACE: f64 = 10.0; // seconds of log time
+// The client connecting to the server: from starting to the handshake is two
+// round trips (checked against routes to Roblox's servers: Frankfurt 65 ms on
+// a 33 ms ping, Singapore 535-715 ms on about 300), so half of it is your ping.
+const CONNECTING: &str = "] Creating connection to ";
+const CONNECTED: &str = ". Handshake complete.";
 
 pub fn unix_time() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
@@ -76,12 +81,14 @@ pub struct LogFollower {
     /// servers joined in this log, oldest first
     pub history: Vec<Map<String, Value>>,
     checked: Option<Instant>,
+    /// the log clock when the client began connecting
+    connecting: Option<f64>,
 }
 
 impl LogFollower {
     pub fn new(logs: &Path) -> LogFollower {
         LogFollower { logs: logs.to_path_buf(), path: None, file: None, partial: Vec::new(), server: Map::new(),
-                      history: Vec::new(), checked: None }
+                      history: Vec::new(), checked: None, connecting: None }
     }
 
     pub fn poll(&mut self) -> Vec<Map<String, Value>> {
@@ -141,6 +148,17 @@ impl LogFollower {
                 self.server.insert("ip".into(), json!(&m[1]));
                 self.history.push(self.server.clone());
                 return Some(self.server.clone());
+            }
+        } else if line.contains(CONNECTING) {
+            self.connecting = clock;
+        } else if line.contains(CONNECTED) {
+            if let (Some(start), Some(end)) = (self.connecting.take(), clock)
+                && self.server.contains_key("job")
+            {
+                let ping = ((end - start) * 1000.0 / 2.0).round();
+                if (1.0..5000.0).contains(&ping) {
+                    self.server.insert("ping".into(), json!(ping as u32));
+                }
             }
         } else if line.contains(LEFT_HOME) && !self.server.is_empty() {
             self.server.clear();
@@ -243,13 +261,15 @@ fn fill_page(data: &Value, page: &mut ServerPage) {
     for s in data.get("data").and_then(Value::as_array).into_iter().flatten() {
         let Some(id) = s.get("id").and_then(Value::as_str) else { continue };
         let number = |k: &str| s.get(k).and_then(Value::as_f64);
+        let ours = known.get(id);
         page.list.push(PublicServer {
             id: id.to_string(),
             playing: number("playing").unwrap_or(0.0) as u32,
             max: number("maxPlayers").unwrap_or(0.0) as u32,
             fps: number("fps").map(|f| f as f32),
-            ping: number("ping").map(|p| p as u32),
-            location: known.get(id).and_then(|i| i.get("location")).and_then(Value::as_str).map(String::from),
+            // Roblox's "ping" is the players' in that server, not yours: only yours is shown
+            ping: ours.and_then(|i| i.get("ping")).and_then(Value::as_u64).map(|p| p as u32),
+            location: ours.and_then(|i| i.get("location")).and_then(Value::as_str).map(String::from),
         });
     }
 }
@@ -377,18 +397,21 @@ pub fn describe(server: &Map<String, Value>) -> Map<String, Value> {
         _ => Map::new(),
     };
     let has_ip = server.contains_key("ip");
-    let info = match known.get(job) {
+    let mut info = match known.get(job) {
         Some(info) if !(has_ip && info.get("location").is_none_or(Value::is_null)) => info.clone(),
-        _ => {
-            let info = json!({
-                "name": game_name(server.get("universe").and_then(Value::as_str)),
-                "location": location(server.get("ip").and_then(Value::as_str)),
-            });
-            known.insert(job.to_string(), info.clone());
-            let _ = fsutil::write_atomic(&described_file(), Value::Object(known).to_string().as_bytes());
-            info
-        }
+        _ => json!({
+            "name": game_name(server.get("universe").and_then(Value::as_str)),
+            "location": location(server.get("ip").and_then(Value::as_str)),
+        }),
     };
+    // your ping there, for the server list, once the client has connected
+    if let Some(ping) = server.get("ping") {
+        info["ping"] = ping.clone();
+    }
+    if known.get(job) != Some(&info) {
+        known.insert(job.to_string(), info.clone());
+        let _ = fsutil::write_atomic(&described_file(), Value::Object(known).to_string().as_bytes());
+    }
     let mut out = server.clone();
     if let Value::Object(info) = info {
         out.extend(info);
@@ -449,6 +472,32 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn your_ping_is_half_the_connection() {
+        let home = TempHome::new();
+        let account = Account::new("main", home.make_prefix("m", None), "", false);
+        let log = account.logs().join("0.747.0.7471481_20261115T200000Z_Player_abcde_last.log");
+        let mut lines = join_lines();
+        lines.push(format!("{},Info [DFLog::RbxTransportRnaExp] Creating connection to 128.116.1.2:61639", stamp(3.0)));
+        std::fs::write(&log, lines.join("\n") + "\n").unwrap();
+        let mut follower = LogFollower::new(&account.logs());
+        follower.poll();
+        assert!(!follower.server.contains_key("ping"));
+        let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        writeln!(f, "{},Info [DFLog::RbxTransportRnaExpConnection] 128.116.1.2:61639. Handshake complete. scid=ab, dcid=cd",
+                 stamp(3.6)).unwrap();
+        follower.poll();
+        assert_eq!(follower.server["ping"], 300);
+        // remembered for the server list (already described: nothing looked up online)
+        fsutil::write_atomic(&described_file(), json!({JOB: {"name": "Obby", "location": "Paris, FR"}}).to_string().as_bytes())
+            .unwrap();
+        let described = describe(&follower.server);
+        assert_eq!(described["ping"], 300);
+        let mut page = ServerPage::default();
+        fill_page(&json!({"data": [{"id": JOB, "playing": 3, "maxPlayers": 8, "ping": 28}]}), &mut page);
+        assert_eq!(page.list[0].ping, Some(300));
+    }
+
+    #[test]
     fn join_then_leave() {
         let home = TempHome::new();
         let account = Account::new("main", home.make_prefix("m", None), "", false);
@@ -478,16 +527,16 @@ pub(crate) mod tests {
     fn a_page_of_public_servers() {
         let _home = crate::testenv::TempHome::new();
         let job = "9d997143-521a-440f-9fca-b6684348f0f8";
-        fsutil::write_atomic(&described_file(), json!({job: {"name": "Obby", "location": "Paris, FR"}}).to_string().as_bytes()).unwrap();
+        fsutil::write_atomic(&described_file(), json!({job: {"name": "Obby", "location": "Paris, FR", "ping": 21}}).to_string().as_bytes()).unwrap();
         let data = json!({"previousPageCursor": null, "nextPageCursor": "abc==", "data": [
             {"id": job, "maxPlayers": 35, "playing": 34, "playerTokens": [], "players": [], "fps": 60.01, "ping": 315},
-            {"id": "beb8f15d-baa9-4c52-9839-d470d0eefe58", "maxPlayers": 35, "playing": 3, "fps": 59.5},
+            {"id": "beb8f15d-baa9-4c52-9839-d470d0eefe58", "maxPlayers": 35, "playing": 3, "fps": 59.5, "ping": 28},
         ]});
         let mut page = ServerPage::default();
         fill_page(&data, &mut page);
         assert_eq!(page.next.as_deref(), Some("abc=="));
         assert_eq!(page.list.len(), 2);
-        assert_eq!((page.list[0].playing, page.list[0].max, page.list[0].ping), (34, 35, Some(315)));
+        assert_eq!((page.list[0].playing, page.list[0].max, page.list[0].ping), (34, 35, Some(21)));
         assert_eq!(page.list[0].location.as_deref(), Some("Paris, FR"));
         assert_eq!((page.list[1].ping, page.list[1].location.as_deref()), (None, None));
         assert_eq!(public_page("1; rm", Sort::Most, None).error, "No game");
