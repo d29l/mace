@@ -549,7 +549,7 @@ impl Card {
 /// The bar's own pin.
 const BAR_PIN: &str = "bar";
 /// A pinned card can't be made smaller than this.
-const MIN_CARD: egui::Vec2 = egui::vec2(220.0, 64.0);
+const MIN_CARD: egui::Vec2 = egui::vec2(200.0, 44.0);
 
 #[derive(Default)]
 struct Browser {
@@ -1027,16 +1027,17 @@ impl Ui {
             Card::Plugin(p, b) => d.menus.get(&(p.clone(), b.clone())).is_some_and(|(menu, _)| menu.title.is_empty()),
             _ => false,
         };
-        let (margin, top) = if strip { (14.0, 28.0) } else { (20.0, 20.0) };
+        // a slim card has thin margins and no header at all: its grip and pin show over it when pointed at
+        let (margin, top, bottom) = if strip { (10.0, 10.0, 8.0) } else { (20.0, 20.0, 20.0) };
         egui::Area::new(egui::Id::unique(("mace-card", &id))).order(egui::Order::Foreground).fade_in(false).constrain(false)
             .fixed_pos(room.min)
             .show(ctx, |ui| {
                 ui.set_opacity(opacity);
-                let inner = egui::Margin { left: margin as i8, right: margin as i8, top: top as i8, bottom: margin as i8 };
+                let inner = egui::Margin { left: margin as i8, right: margin as i8, top: top as i8, bottom: bottom as i8 };
                 let frame = egui::Frame::new().fill(c.background).corner_radius(CornerRadius::same(if strip { 16 } else { 20 }))
                     .inner_margin(inner).shadow(shadow())
                     .show(ui, |ui| {
-                        let (width, height) = (room.width() - 2.0 * margin, room.height() - top - margin);
+                        let (width, height) = (room.width() - 2.0 * margin, room.height() - top - bottom);
                         ui.set_width(width);
                         ui.set_max_height(height);
                         if fixed {
@@ -1054,11 +1055,17 @@ impl Ui {
                         }
                     });
                 let rect = frame.response.rect;
+                // a slim card's grip and pin, while it's pointed at (or being moved)
+                let near = ui.rect_contains_pointer(rect) || self.dragging;
                 if pinned {
                     // clicks here are the card's, even with the panel closed
                     self.hits.push(rect);
                     // moved by its top
-                    let handle = Rect::from_min_size(rect.min, vec2(rect.width() - 52.0, if strip { top } else { 52.0 }));
+                    let handle = if strip {
+                        Rect::from_center_size(pos2(rect.center().x, rect.min.y + 8.0), vec2(80.0, 16.0))
+                    } else {
+                        Rect::from_min_size(rect.min, vec2(rect.width() - 52.0, 52.0))
+                    };
                     let drag = ui.interact(handle, ui.scope_id().with("drag"), Sense::drag());
                     if drag.dragged() {
                         self.dragging = true;
@@ -1094,15 +1101,27 @@ impl Ui {
                         actions.push(Action::Send(ToMace::Pins { pins: self.pins.clone() }));
                     }
                 }
-                if strip {
+                if strip && near {
                     // a grip: what to hold to move it
-                    let grip = pos2(rect.center().x, rect.min.y + 14.0);
+                    let grip = pos2(rect.center().x, rect.min.y + 7.0);
+                    ui.painter().rect_filled(Rect::from_center_size(grip, vec2(26.0, 12.0)), CornerRadius::same(6),
+                                             Color32::from_black_alpha(120));
                     for (dx, dy) in [(-5.0, -2.0), (0.0, -2.0), (5.0, -2.0), (-5.0, 2.0), (0.0, 2.0), (5.0, 2.0)] {
                         ui.painter().circle_filled(grip + vec2(dx, dy), 1.2, c.subtext.gamma_multiply(0.8));
                     }
                 }
-                let (side, inset) = if strip { (24.0, 4.0) } else { (32.0, 14.0) };
-                let at = Rect::from_min_size(pos2(rect.max.x - inset - side - if strip { 6.0 } else { 0.0 }, rect.min.y + inset), vec2(side, side));
+                if strip && !near {
+                    return;
+                }
+                // slim: at the top left, over the corner (where Spotify's mini-player has its close)
+                let at = if strip {
+                    Rect::from_min_size(rect.min + vec2(4.0, 4.0), vec2(24.0, 24.0))
+                } else {
+                    Rect::from_min_size(pos2(rect.max.x - 14.0 - 32.0, rect.min.y + 14.0), vec2(32.0, 32.0))
+                };
+                if strip {
+                    ui.painter().circle_filled(at.center(), 12.0, Color32::from_black_alpha(150));
+                }
                 let mut corner = ui.new_child(egui::UiBuilder::new().max_rect(at));
                 let tint = if pinned { Some(c.text) } else { Some(c.subtext) };
                 let tip = if pinned { "Unpin" } else { "Keep on screen" };
@@ -1814,6 +1833,17 @@ mod clicks {
             {"type":"stack","grow":true,"children":[{"type":"text","text":"A title","lines":1}]},
             {"type":"button","label":"","icon":"star","size":"medium","key":"end"}]}"#).unwrap();
         assert_eq!(sent_plugin(&click_block(&ctx, &mut ui, &row, pos2(300.0 - 18.0, 18.0))), [("end".into(), "click".into(), None)]);
+        // a centred stack of buttons in a row (a player's controls) is as wide as its buttons: the title keeps its room
+        let player: Node = serde_json::from_str(r#"{"type":"stack","direction":"row","children":[
+            {"type":"stack","grow":true,"children":[{"type":"text","text":"A title","lines":1}]},
+            {"type":"stack","direction":"row","align":"center","children":[
+                {"type":"button","label":"","icon":"star","size":"medium","key":"controls"}]}]}"#).unwrap();
+        assert_eq!(sent_plugin(&click_block(&ctx, &mut ui, &player, pos2(300.0 - 18.0, 18.0))),
+                   [("controls".into(), "click".into(), None)]);
+        let Node::Stack { children, .. } = &player else { panic!() };
+        let widths = ui.row_widths(&egui::Ui::new(ctx.clone(), egui::Id::unique("m"), egui::UiBuilder::new()),
+                                   Colors::of(&Theme::default()), children, 300.0, 8.0);
+        assert_eq!(widths, [300.0 - 8.0 - 36.0, 36.0]);
         // centred: in the middle
         let centred: Node = serde_json::from_str(r#"{"type":"stack","direction":"row","align":"center","children":[
             {"type":"button","label":"","icon":"star","size":"medium","key":"mid"}]}"#).unwrap();

@@ -340,8 +340,9 @@ common format; drawn square, cropped to its middle). `size` is "small" (48),
 "medium" (96, the default), "large" (160), "fill" (as wide as there's room
 for), or a number of points.
 
-**No title.** A menu without a title has no header: its card gets a slim
-strip on top instead, with a grip to move it and its pin.
+**No title.** A menu without a title has no header, and its card has thin
+margins: the grip to move it (top middle) and its pin (top left) show over it
+while it's pointed at. For strips as thin as a mini-player's.
 
 **Its size.** The menu function gets the room its menu has, `{ width,
 height }` in points, and is called again when that changes (the player

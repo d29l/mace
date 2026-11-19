@@ -85,6 +85,12 @@ fn image_side(size: &str, width: f32) -> f32 {
     side.min(width).max(1.0)
 }
 
+/// A stack that centres (or ends) its blocks: standing in a column, it's
+/// given the column's width to do that in. In a row it's as wide as its blocks.
+fn spans(node: &Node) -> bool {
+    matches!(node, Node::Stack { align, .. } if align == "center" || align == "end")
+}
+
 /// Blocks that take the room there is (in a row, the room the others leave).
 fn fills(node: &Node) -> bool {
     match node {
@@ -141,7 +147,8 @@ impl Ui {
         let width = ui.available_width();
         let size = self.measure(ui, c, node, width);
         let (rect, _) = ui.allocate_exact_size(vec2(width, size.y), Sense::hover());
-        self.place(ui, c, d, node, Rect::from_min_size(rect.min, vec2(size.x.min(width), size.y)), at, path, actions);
+        let w = if spans(node) { width } else { size.x.min(width) };
+        self.place(ui, c, d, node, Rect::from_min_size(rect.min, vec2(w, size.y)), at, path, actions);
     }
 
     /// The room a block takes when it has `width` points.
@@ -158,15 +165,15 @@ impl Ui {
             Node::Row { subtitle, .. } => vec2(width, if subtitle.as_deref().is_some_and(|s| !s.is_empty()) { 56.0 } else { 44.0 }),
             Node::Toggle { .. } => vec2(width, 40.0),
             Node::Input { .. } => vec2(width, 38.0),
-            Node::Progress { times, .. } => vec2(width, if *times { 28.0 } else { 12.0 }),
+            Node::Progress { times, .. } => vec2(width, if *times { 26.0 } else { 6.0 }),
             Node::Image { size, .. } => {
                 let side = image_side(size, width);
                 vec2(side, side)
             }
             Node::Space { size } => vec2(space_of(size), space_of(size)),
-            Node::Stack { direction, gap, children, grow, align } => {
-                // centred or at the end: across all the room there is
-                let wide = *grow || matches!(align.as_str(), "center" | "end") || children.iter().any(fills);
+            Node::Stack { direction, gap, children, grow, .. } => {
+                // as wide as its blocks (centring spreads it only where it stands alone: see `spans`)
+                let wide = *grow || children.iter().any(fills);
                 let gap = gap_of(gap);
                 if children.is_empty() {
                     return Vec2::ZERO;
@@ -189,7 +196,7 @@ impl Ui {
 
     /// How wide each block of a row is: as wide as it is, and those that
     /// grow share what's left.
-    fn row_widths(&self, ui: &EUi, c: Colors, children: &[Node], width: f32, gap: f32) -> Vec<f32> {
+    pub(super) fn row_widths(&self, ui: &EUi, c: Colors, children: &[Node], width: f32, gap: f32) -> Vec<f32> {
         let gaps = gap * children.len().saturating_sub(1) as f32;
         let natural: Vec<Option<f32>> = children.iter()
             .map(|n| (!fills(n)).then(|| self.measure(ui, c, n, (width - gaps).max(0.0)).x))
@@ -335,7 +342,7 @@ impl Ui {
                     }
                     None => {}
                 }
-                let track = Rect::from_min_size(pos2(rect.min.x, rect.min.y + 4.0), vec2(rect.width(), 4.0));
+                let track = Rect::from_min_size(pos2(rect.min.x, rect.min.y + 1.0), vec2(rect.width(), 4.0));
                 let mut hovered = false;
                 if key.is_some() {
                     let response = ui.interact(track.expand2(vec2(0.0, 6.0)), id, Sense::click_and_drag());
@@ -402,7 +409,10 @@ impl Ui {
                 } else {
                     let mut y = rect.min.y;
                     for (i, child) in children.iter().enumerate() {
-                        let size = self.measure(ui, c, child, rect.width());
+                        let mut size = self.measure(ui, c, child, rect.width());
+                        if spans(child) {
+                            size.x = rect.width();
+                        }
                         let x = rect.min.x + match align.as_str() {
                             "center" => ((rect.width() - size.x) / 2.0).max(0.0),
                             "end" => (rect.width() - size.x).max(0.0),
