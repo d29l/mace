@@ -392,12 +392,25 @@ pub fn avatar_rgba(path: &Path, size: u32) -> Option<(u32, Vec<u8>)> {
 // -- the socket
 
 /// What the panel may ask Mace to do.
-const ALLOWED: [&str; 6] = ["start", "stop", "mute", "rejoin", "gather", "focus"];
+const ALLOWED: [&str; 7] = ["start", "stop", "mute", "rejoin", "gather", "focus", "settings"];
+
+/// Open Mace Settings, in a process of its own (it comes to the front if it's
+/// open already).
+fn open_settings() -> (bool, String) {
+    let argv = [launch::mace_exe().to_string_lossy().into_owned(), "settings".into()];
+    match launch::spawn_detached(&argv, None, None) {
+        Ok(()) => (true, String::new()),
+        Err(error) => (false, format!("couldn't open Mace Settings: {error:#}")),
+    }
+}
 
 fn run(args: &[String]) -> (bool, String) {
     let Some(name) = args.first() else { return (false, "no command".into()) };
     if !ALLOWED.contains(&name.as_str()) {
         return (false, format!("not allowed from the panel: {name}"));
+    }
+    if name == "settings" {
+        return open_settings();
     }
     let mut args = args[1..].to_vec();
     if name == "start" {

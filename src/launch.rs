@@ -216,7 +216,7 @@ pub fn resolve_link(link: Option<&str>, account: &Account) -> anyhow::Result<Opt
     Ok(Some(links::join_url(&link)?))
 }
 
-fn spawn_detached(argv: &[String], env: Option<&Env>, log: Option<&Path>) -> anyhow::Result<()> {
+pub(crate) fn spawn_detached(argv: &[String], env: Option<&Env>, log: Option<&Path>) -> anyhow::Result<()> {
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]).stdin(Stdio::null());
     if let Some(env) = env {

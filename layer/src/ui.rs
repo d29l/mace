@@ -1,18 +1,19 @@
 //! The panel: a bar floating at the top of the game (who you're playing as,
-//! this server, Rejoin, Servers, Alts, and ⋯ for the rest) with drop-downs
-//! under it, and toasts. Everything shown comes from Mace; every button is a
-//! request to Mace (or a copy to the clipboard, done right here).
+//! this server, then icon buttons: rejoin and copy the link; servers, recent
+//! games and alts; Mace Settings) with drop-downs under it, and toasts.
+//! Everything shown comes from Mace; every button is a request to Mace (or a
+//! copy to the clipboard, done right here).
 //!
-//! Layout follows the usual rules for toolbars: an 8-point grid, groups kept
-//! apart by space rather than lines, one emphasised action, the overflow menu
-//! at the trailing end, controls 40 points high, inner corners following the
-//! outer ones, and no borders (a soft shadow lifts things off the game).
+//! Layout follows the usual rules for toolbars: an 8-point grid, icon buttons
+//! with tooltips, groups kept apart by space rather than lines, settings at the
+//! trailing end, 40-point targets, inner corners following the outer ones, and
+//! no borders (a soft shadow lifts things off the game).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use egui::{Align2, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Response, Sense, Shape, Stroke, Ui as EUi, pos2, vec2};
+use egui::{Align2, Color32, CornerRadius, FontFamily, FontId, Rect, Response, Sense, Ui as EUi, pos2, vec2};
 use mace_proto::{Account, Config, Game, PublicServer, ServerPage, Sort, State, Theme, ToMace};
 
 use crate::client::{self, Avatar};
@@ -158,170 +159,138 @@ impl Colors {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+/// Icons from GNOME's Adwaita theme, the ones Mace Settings shows
+/// (`dev/icons.sh` makes them; layer/icons/README.md says whose they are).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Icon {
+    Refresh,
+    Copy,
+    Servers,
+    Games,
+    Alts,
+    Settings,
+    Close,
+    Focus,
     Volume,
     Muted,
-    Close,
-    Refresh,
-    Group,
-    Window,
-    Servers,
-    Link,
-    Games,
 }
 
-fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
-    let c = rect.center();
-    let s = rect.width().min(rect.height()) / 20.0; // drawn on a 20-unit grid
-    let p = |x: f32, y: f32| pos2(c.x + x * s, c.y + y * s);
-    let stroke = Stroke::new(1.6 * s, color);
-    let arc = |cx: f32, cy: f32, r: f32, from: f32, to: f32| -> Vec<Pos2> {
-        (0..=16).map(|i| {
-            let a = from + (to - from) * i as f32 / 16.0;
-            p(cx + r * a.cos(), cy + r * a.sin())
-        }).collect()
-    };
-    use std::f32::consts::PI;
-    match icon {
-        Icon::Volume | Icon::Muted => {
-            painter.add(Shape::convex_polygon(vec![p(-7.0, -2.5), p(-4.0, -2.5), p(0.0, -6.5), p(0.0, 6.5), p(-4.0, 2.5), p(-7.0, 2.5)],
-                                              color, Stroke::NONE));
-            if icon == Icon::Volume {
-                painter.add(Shape::line(arc(0.0, 0.0, 3.6, -PI / 4.0, PI / 4.0), stroke));
-                painter.add(Shape::line(arc(0.0, 0.0, 7.0, -PI / 3.5, PI / 3.5), stroke));
-            } else {
-                painter.line_segment([p(3.0, -3.5), p(8.0, 3.5)], stroke);
-                painter.line_segment([p(3.0, 3.5), p(8.0, -3.5)], stroke);
+/// The pixel sizes each icon comes in, in the order its file has them.
+const ICON_SIZES: [u32; 6] = [16, 20, 24, 32, 40, 48];
+
+impl Icon {
+    fn coverage(self) -> &'static [u8] {
+        match self {
+            Icon::Refresh => include_bytes!("../icons/view-refresh.a8"),
+            Icon::Copy => include_bytes!("../icons/edit-copy.a8"),
+            Icon::Servers => include_bytes!("../icons/network-server.a8"),
+            Icon::Games => include_bytes!("../icons/input-gaming.a8"),
+            Icon::Alts => include_bytes!("../icons/system-users.a8"),
+            Icon::Settings => include_bytes!("../icons/emblem-system.a8"),
+            Icon::Close => include_bytes!("../icons/window-close.a8"),
+            Icon::Focus => include_bytes!("../icons/focus-windows.a8"),
+            Icon::Volume => include_bytes!("../icons/audio-volume-high.a8"),
+            Icon::Muted => include_bytes!("../icons/audio-volume-muted.a8"),
+        }
+    }
+
+    /// The icon `size` pixels wide, one byte of coverage a pixel.
+    fn pixels(self, size: u32) -> &'static [u8] {
+        let mut at = 0;
+        for s in ICON_SIZES {
+            let n = (s * s) as usize;
+            if s == size {
+                return &self.coverage()[at..at + n];
             }
+            at += n;
         }
-        Icon::Close => {
-            painter.line_segment([p(-5.5, -5.5), p(5.5, 5.5)], stroke);
-            painter.line_segment([p(-5.5, 5.5), p(5.5, -5.5)], stroke);
-        }
-        Icon::Refresh => {
-            // most of a circle, open at the top right, with an arrowhead where it ends
-            let end = -PI * 0.3;
-            painter.add(Shape::line(arc(0.0, 0.0, 6.5, end + 0.5, end + 2.0 * PI - 0.35), stroke));
-            let (cx, cy) = (6.5 * end.cos(), 6.5 * end.sin());
-            let (tx, ty) = (-end.sin(), end.cos());
-            let (nx, ny) = (end.cos(), end.sin());
-            painter.add(Shape::convex_polygon(vec![
-                p(cx + tx * 3.5, cy + ty * 3.5),
-                p(cx - tx * 1.5 + nx * 3.4, cy - ty * 1.5 + ny * 3.4),
-                p(cx - tx * 1.5 - nx * 3.4, cy - ty * 1.5 - ny * 3.4),
-            ], color, Stroke::NONE));
-        }
-        Icon::Group => {
-            painter.circle_stroke(p(-2.0, -3.0), 3.2 * s, stroke);
-            painter.add(Shape::line(arc(-2.0, 7.5, 6.5, PI * 1.15, PI * 1.85), stroke));
-            painter.circle_stroke(p(5.0, -2.0), 2.4 * s, stroke);
-            painter.add(Shape::line(arc(5.5, 7.0, 5.0, PI * 1.25, PI * 1.8), stroke));
-        }
-        Icon::Window => {
-            painter.rect_stroke(Rect::from_min_max(p(-7.0, -5.0), p(5.0, 7.0)), 2.0 * s, stroke, egui::StrokeKind::Middle);
-            painter.line_segment([p(-1.0, 1.0), p(7.5, -7.5)], stroke);
-            painter.add(Shape::line(vec![p(2.0, -7.5), p(7.5, -7.5), p(7.5, -2.0)], stroke));
-        }
-        Icon::Games => {
-            // four rounded tiles
-            for (x, y) in [(-7.0, -7.0), (1.0, -7.0), (-7.0, 1.0), (1.0, 1.0)] {
-                painter.rect_stroke(Rect::from_min_max(p(x, y), p(x + 6.0, y + 6.0)), 1.8 * s, stroke,
-                                    egui::StrokeKind::Middle);
-            }
-        }
-        Icon::Servers => {
-            for y in [-5.0, 0.0, 5.0] {
-                painter.rect_filled(Rect::from_min_max(p(-7.0, y - 1.6), p(7.0, y + 1.6)), 1.2 * s, color);
-            }
-        }
-        Icon::Link => {
-            // two rounded links of a chain on the diagonal, overlapping in the middle
-            let (dx, dy) = (std::f32::consts::FRAC_1_SQRT_2, -std::f32::consts::FRAC_1_SQRT_2);
-            let link = |cx: f32, cy: f32| -> Vec<Pos2> {
-                let (half, r) = (2.6, 3.0);
-                let base = dy.atan2(dx);
-                let mut points = Vec::new();
-                for (end, from) in [(half, base - PI / 2.0), (-half, base + PI / 2.0)] {
-                    let (ex, ey) = (cx + dx * end, cy + dy * end);
-                    for i in 0..=10 {
-                        let a = from + PI * i as f32 / 10.0;
-                        points.push(p(ex + r * a.cos(), ey + r * a.sin()));
-                    }
-                }
-                points
-            };
-            painter.add(Shape::closed_line(link(-dx * 2.9, -dy * 2.9), stroke));
-            painter.add(Shape::closed_line(link(dx * 2.9, dy * 2.9), stroke));
-        }
+        &[]
     }
 }
 
-/// A round icon button (32 points) for rows and headers.
+/// The icons made into textures so far, per context.
+#[derive(Clone, Default)]
+struct IconTextures(HashMap<(Icon, u32), egui::TextureHandle>);
+
+/// Draw an icon in `color`, as big as `rect` is (in the size drawn for that
+/// many pixels, on whole pixels, so it stays sharp).
+fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
+    let ctx = painter.ctx();
+    let ppp = ctx.pixels_per_point();
+    let wanted = rect.width().min(rect.height()) * ppp;
+    let size = ICON_SIZES.iter().copied().find(|s| *s as f32 >= wanted - 0.5).unwrap_or(48);
+    let key = egui::Id::unique("mace-icons");
+    let made = ctx.data_mut(|d| d.get_temp_mut_or_default::<IconTextures>(key).0.get(&(icon, size)).map(|t| t.id()));
+    let texture = match made {
+        Some(id) => id,
+        None => {
+            let rgba: Vec<u8> = icon.pixels(size).iter().flat_map(|a| [255, 255, 255, *a]).collect();
+            let image = egui::ColorImage::from_rgba_unmultiplied([size as usize; 2], &rgba);
+            let handle = ctx.load_texture(format!("icon-{size}"), image, egui::TextureOptions::LINEAR);
+            let id = handle.id();
+            ctx.data_mut(|d| d.get_temp_mut_or_default::<IconTextures>(key).0.insert((icon, size), handle));
+            id
+        }
+    };
+    let side = size as f32 / ppp;
+    let min = rect.center() - vec2(side, side) / 2.0;
+    let min = pos2((min.x * ppp).round() / ppp, (min.y * ppp).round() / ppp);
+    painter.image(texture, Rect::from_min_size(min, vec2(side, side)), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                  color);
+}
+
+/// A round icon button (32 points, a 16-point icon) for rows and headers.
 fn icon_button(ui: &mut EUi, c: Colors, icon: Icon, tip: &str, tint: Option<Color32>) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
     if response.hovered() {
         ui.painter().circle_filled(rect.center(), 16.0, c.hover);
     }
-    paint_icon(ui.painter(), rect.shrink(7.0), icon, tint.unwrap_or(c.text));
+    paint_icon(ui.painter(), Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), icon, tint.unwrap_or(c.text));
     response.on_hover_text(tip)
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Look {
-    /// The one emphasised action (Rejoin).
-    Primary,
-    /// The others.
-    Tonal,
+/// A button in the bar.
+struct BarButton {
+    salt: &'static str,
+    icon: Icon,
+    tip: &'static str,
     /// Its drop-down is open.
-    Selected,
+    selected: bool,
+    enabled: bool,
+    /// Counts something, in a small pill at its top right.
+    badge: Option<usize>,
 }
 
-/// How wide a bar button is: icon, label (unless compact) and count.
-fn button_width(painter: &egui::Painter, label: Option<&str>, count: Option<usize>) -> f32 {
-    let Some(label) = label else { return CONTROL };
-    let mut width = 14.0 + 18.0 + 8.0 + painter.layout_no_wrap(label.into(), bold(13.5), Color32::WHITE).size().x + 16.0;
-    if let Some(n) = count.filter(|n| *n > 0) {
-        width += 8.0 + 20.0f32.max(painter.layout_no_wrap(n.to_string(), bold(11.5), Color32::WHITE).size().x + 10.0);
-    }
-    width
-}
-
-/// A bar button in `rect` (40 points high, corners following the bar's).
-#[allow(clippy::too_many_arguments)]
-fn bar_button(ui: &mut EUi, c: Colors, rect: Rect, salt: &str, icon: Icon, label: Option<&str>, look: Look,
-              enabled: bool, count: Option<usize>) -> Response {
+/// A bar button: a 20-point icon in a round 40-point target, flat until
+/// hovered and filled while its drop-down is open.
+fn bar_button(ui: &mut EUi, c: Colors, rect: Rect, b: &BarButton) -> Response {
+    let BarButton { salt, icon, selected, enabled, badge, .. } = *b;
     let response = ui.interact(rect, ui.scope_id().with(salt), if enabled { Sense::click() } else { Sense::hover() });
-    let hovered = enabled && response.hovered();
-    let (fill, ink) = match look {
-        Look::Primary => (c.accent, c.on_accent),
-        Look::Tonal => (c.hover, c.text),
-        Look::Selected => (c.hover.lerp_to_gamma(c.text, 0.18), c.text),
-    };
-    let fill = if hovered { fill.lerp_to_gamma(if look == Look::Primary { c.background } else { c.text }, 0.08) } else { fill };
-    let (fill, ink) = if enabled { (fill, ink) } else { (c.surface, c.subtext.gamma_multiply(0.6)) };
     let painter = ui.painter();
-    let radius = (BAR_RADIUS as f32 - INSET) as u8;
-    painter.rect_filled(rect, CornerRadius::same(radius), fill);
-    let Some(label) = label else {
-        paint_icon(painter, Rect::from_center_size(rect.center(), vec2(18.0, 18.0)), icon, ink);
-        return response;
+    let fill = if selected {
+        Some(c.hover.lerp_to_gamma(c.text, 0.18))
+    } else if enabled && response.is_pointer_button_down_on() {
+        Some(c.hover.lerp_to_gamma(c.text, 0.1))
+    } else if enabled && response.hovered() {
+        Some(c.hover)
+    } else {
+        None
     };
-    let mut x = rect.min.x + 14.0;
-    paint_icon(painter, Rect::from_min_size(pos2(x, rect.center().y - 9.0), vec2(18.0, 18.0)), icon, ink);
-    x += 18.0 + 8.0;
-    let text = painter.layout_no_wrap(label.into(), bold(13.5), ink);
-    let size = text.size();
-    painter.galley(pos2(x, rect.center().y - size.y / 2.0), text, ink);
-    x += size.x;
-    if let Some(n) = count.filter(|n| *n > 0) {
-        let digits = painter.layout_no_wrap(n.to_string(), bold(11.5), c.on_accent);
-        let pill = Rect::from_min_size(pos2(x + 8.0, rect.center().y - 10.0),
-                                       vec2(20.0f32.max(digits.size().x + 10.0), 20.0));
-        painter.rect_filled(pill, CornerRadius::same(10), if enabled { c.accent } else { c.subtext });
+    if let Some(fill) = fill {
+        painter.circle_filled(rect.center(), rect.width() / 2.0, fill);
+    }
+    let ink = if enabled { c.text } else { c.subtext.gamma_multiply(0.45) };
+    paint_icon(painter, Rect::from_center_size(rect.center(), vec2(20.0, 20.0)), icon, ink);
+    if let Some(n) = badge.filter(|n| *n > 0) {
+        let digits = painter.layout_no_wrap(n.to_string(), bold(10.5), c.on_accent);
+        let pill = Rect::from_min_size(pos2(rect.center().x + 3.0, rect.min.y + 3.0),
+                                       vec2(16.0f32.max(digits.size().x + 8.0), 16.0));
+        // a ring of the bar's colour keeps it off the icon
+        painter.rect_filled(pill.expand(2.0), CornerRadius::same(10), c.background);
+        painter.rect_filled(pill, CornerRadius::same(8), if enabled { c.accent } else { c.subtext });
         painter.galley(pill.center() - digits.size() / 2.0, digits, c.on_accent);
     }
-    response
+    response.on_hover_text(b.tip)
 }
 
 /// A small text button (chips in the server list).
@@ -586,37 +555,33 @@ impl Ui {
                 };
                 self.paint_avatar(ui, c, &me, avatar, &d.avatars);
 
-                // the actions, from the trailing end: copy link, Alts, Games, Servers, Rejoin
-                let compact = bar.width() < 760.0;
-                let label = |text: &'static str| (!compact).then_some(text);
+                // the actions, from the trailing end, in groups kept apart by space:
+                // Mace Settings; the drop-downs (servers, games, alts); this server (copy its link, rejoin)
                 let in_game = me.server.is_some();
                 let alts = d.state.as_ref().map_or(0, |s| s.accounts.iter().filter(|a| a.id != me.id && a.running).count());
-                let look = |drop: Drop| if self.drop == drop { Look::Selected } else { Look::Tonal };
-                let buttons = [
-                    ("link", Icon::Link, None, Look::Tonal, in_game, None),
-                    ("alts", Icon::Group, label("Alts"), look(Drop::Alts), true, Some(alts)),
-                    ("games", Icon::Games, label("Games"), look(Drop::Games), true, None),
-                    ("servers", Icon::Servers, label("Servers"), look(Drop::Servers), in_game, None),
-                    ("rejoin", Icon::Refresh, label("Rejoin"), Look::Primary, in_game, None),
+                let open = |drop: Drop| self.drop == drop;
+                let button = |salt, icon, tip, selected, enabled, badge| BarButton { salt, icon, tip, selected, enabled, badge };
+                let groups = [
+                    vec![button("settings", Icon::Settings, "Mace Settings", false, true, None)],
+                    vec![button("alts", Icon::Alts, "Alts", open(Drop::Alts), true, Some(alts)),
+                         button("games", Icon::Games, "Recent games", open(Drop::Games), true, None),
+                         button("servers", Icon::Servers, "Servers", open(Drop::Servers), in_game, None)],
+                    vec![button("link", Icon::Copy, "Copy join link", false, in_game, None),
+                         button("rejoin", Icon::Refresh, "Rejoin", false, in_game, None)],
                 ];
                 let mut right = bar.max.x - INSET;
                 let mut clicked = Vec::new();
-                for (salt, icon, text, look, enabled, count) in buttons {
-                    let width = button_width(&painter, text, count);
-                    let rect = Rect::from_min_max(pos2(right - width, mid - CONTROL / 2.0), pos2(right, mid + CONTROL / 2.0));
-                    right = rect.min.x - 8.0;
-                    let response = bar_button(ui, c, rect, salt, icon, text, look, enabled, count);
-                    let tip = match salt {
-                        "link" => "Copy join link",
-                        "alts" => "Alts",
-                        "games" => "Recent games",
-                        "servers" => "Servers",
-                        _ => "Rejoin",
-                    };
-                    if response.on_hover_text(tip).clicked() {
-                        clicked.push(salt);
+                for group in groups {
+                    for b in &group {
+                        let rect = Rect::from_min_max(pos2(right - CONTROL, mid - CONTROL / 2.0), pos2(right, mid + CONTROL / 2.0));
+                        right = rect.min.x - 4.0;
+                        if bar_button(ui, c, rect, b).clicked() {
+                            clicked.push(b.salt);
+                        }
                     }
+                    right -= 12.0;
                 }
+                right += 16.0;
                 for salt in clicked {
                     match salt {
                         "link" => {
@@ -631,6 +596,11 @@ impl Ui {
                             if let Some(server) = &me.server {
                                 self.open_browser(actions, &server.place);
                             }
+                        }
+                        "settings" => {
+                            self.run(actions, &["settings"]);
+                            self.say("Opening Mace Settings…");
+                            actions.push(Action::Close);
                         }
                         _ => {
                             self.run(actions, &["rejoin", &me.id]);
@@ -768,7 +738,7 @@ impl Ui {
             Some(id) => egui::Image::new((id, icon.size())).corner_radius(CornerRadius::same(8)).paint_at(ui, icon),
             None => {
                 ui.painter().rect_filled(icon, CornerRadius::same(8), c.surface);
-                paint_icon(ui.painter(), icon.shrink(8.0), Icon::Games, c.text);
+                paint_icon(ui.painter(), icon.shrink(8.0), Icon::Games, c.subtext);
             }
         }
         let x = icon.max.x + 12.0;
@@ -795,7 +765,7 @@ impl Ui {
                 self.run(actions, &["stop", &a.id]);
                 self.say(format!("Stopping {}…", a.name));
             }
-            if can_focus && icon_button(ui, c, Icon::Window, &format!("Switch to {}", a.name), None).clicked() {
+            if can_focus && icon_button(ui, c, Icon::Focus, &format!("Switch to {}", a.name), None).clicked() {
                 self.run(actions, &["focus", &a.id]);
                 actions.push(Action::Close);
             }
@@ -820,7 +790,7 @@ impl Ui {
             Some(a) => self.paint_avatar(ui, c, a, avatar, avatars),
             None => {
                 ui.painter().circle_filled(avatar.center(), 18.0, c.surface);
-                paint_icon(ui.painter(), avatar.shrink(8.0), Icon::Group, c.text);
+                paint_icon(ui.painter(), avatar.shrink(8.0), Icon::Alts, c.text);
             }
         }
         let x = avatar.max.x + 12.0;
@@ -1067,6 +1037,7 @@ mod tests {
 #[cfg(test)]
 mod clicks {
     use super::*;
+    use egui::Pos2;
 
     fn snapshot(toasts: Vec<(String, String)>) -> Snapshot {
         let me = Account { id: "main".into(), name: "Main".into(), running: true, ..Default::default() };
@@ -1135,9 +1106,7 @@ mod clicks {
     fn a_recent_game_starts_here() {
         let ctx = egui::Context::default();
         setup(&ctx);
-        let mut ui = Ui::default();
-        ui.opened();
-        ui.drop = Drop::Games;
+        let mut ui = Ui { drop: Drop::Games, ..Default::default() };
         frame(&ctx, &mut ui, 1.0, vec![], false, vec![]);
         frame(&ctx, &mut ui, 1.0, vec![], false, vec![]);
         // the first row, under the drop-down's title (it hangs from the bar's trailing end)
