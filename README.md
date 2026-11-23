@@ -29,6 +29,7 @@ prefix, so you can play on several of them at the same time.
 - Accounts you aren't using run at a lower frame rate
 - Anti-AFK, to keep idle accounts from being kicked. It's off by default: it
   sends input to the game, which may break Roblox's rules
+- Roblox's telemetry and crash reports are blocked (you can turn this off)
 - An option to hide tabbing out, so games don't know when you switch to
   another window
 - Mods for every account: cursor, shift lock cursor, death sound, font, and

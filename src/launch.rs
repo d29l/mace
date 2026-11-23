@@ -138,6 +138,9 @@ pub fn command(account: &Account, bundle: &Path, url: Option<&str>, config: &Set
     for (name, value) in &s.extra_env {
         env.insert(name.clone(), value.as_str().map_or_else(|| value.to_string(), String::from));
     }
+    if config.block_telemetry {
+        block_hosts(&mut env, TELEMETRY_HOSTS);
+    }
 
     let rosemary = runner::find(&s.rosemary)?;
     if config.panel
@@ -158,6 +161,34 @@ pub fn command(account: &Account, bundle: &Path, url: Option<&str>, config: &Set
     }
     let (before, after) = wrapper(&s.wrapper, &mut env);
     Ok(([before, core, after].concat(), env))
+}
+
+/// Where Roblox sends telemetry, analytics and crash reports: the ones its
+/// client names, and Quadra's. Rosemary answers "no such host" for each.
+pub const TELEMETRY_HOSTS: &[&str] = &[
+    "client-telemetry.roblox.com",
+    "ephemeralcounters.api.roblox.com",
+    "ecsv2.roblox.com",
+    "metrics.roblox.com",
+    "tracing.roblox.com",
+    "tracing-grpc.roblox.com",
+    "upload.crashes.roblox.com",
+    "upload.crashes.rbxinfra.com",
+    "uploads.backtrace.rbx.com",
+    "sentry-relay.rbxinfra.com",
+    "www.google-analytics.com",
+];
+
+/// Add hosts to Rosemary's block list, keeping any already there.
+fn block_hosts(env: &mut Env, hosts: &[&str]) {
+    let mut list: Vec<String> = env.get("ROSEMARY_BLOCK_HOST").map(|v| v.split(',').map(str::trim)
+        .filter(|h| !h.is_empty()).map(String::from).collect()).unwrap_or_default();
+    for host in hosts {
+        if !list.iter().any(|h| h.eq_ignore_ascii_case(host)) {
+            list.push(host.to_string());
+        }
+    }
+    env.insert("ROSEMARY_BLOCK_HOST".into(), list.join(","));
 }
 
 /// Write Roblox's own frame-rate setting (the in-game menu stops at 240). Only
@@ -474,6 +505,25 @@ mod tests {
         assert_eq!(env["ROSEMARY_MENU"], "none");
         assert_eq!(env["ROSEMARY_SCREEN_REFRESH_RATE"], "9999");
         assert_eq!(env["ROSEMARY_COMMAND_KEY"], "super+ctrl:edit");
+        let blocked: Vec<&str> = env["ROSEMARY_BLOCK_HOST"].split(',').collect();
+        assert_eq!(blocked, TELEMETRY_HOSTS);
+    }
+
+    #[test]
+    fn telemetry_blocking_keeps_your_own_hosts_and_turns_off() {
+        let mut env = Env::new();
+        env.insert("ROSEMARY_BLOCK_HOST".into(), "example.com, ecsv2.roblox.com".into());
+        block_hosts(&mut env, TELEMETRY_HOSTS);
+        let blocked: Vec<&str> = env["ROSEMARY_BLOCK_HOST"].split(',').collect();
+        assert_eq!(blocked[..2], ["example.com", "ecsv2.roblox.com"]);
+        assert_eq!(blocked.len(), TELEMETRY_HOSTS.len() + 1);
+
+        let home = TempHome::new();
+        let (main, _) = setup(&home);
+        let mut config = settings::load();
+        config.block_telemetry = false;
+        let (_, env) = command(&main, &main.bundle(), None, &config).unwrap();
+        assert!(env.get("ROSEMARY_BLOCK_HOST").is_none_or(|v| !v.contains("ecsv2.roblox.com")));
     }
 
     #[test]

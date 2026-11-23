@@ -149,6 +149,13 @@ impl GlobalSettings {
         self.saver(move |t| t.control_edit_keys = edit.is_active());
         self.saver(move |t| t.confine_pointer = confine.is_active());
 
+        let group = adw::PreferencesGroup::builder().title("Privacy").build();
+        page.add(&group);
+        let telemetry = adw::SwitchRow::builder().title("Block Roblox telemetry").active(s.block_telemetry).build();
+        group.add(&telemetry);
+        telemetry.connect_active_notify({ let c = changed.clone(); move |_| c() });
+        self.saver(move |t| t.block_telemetry = telemetry.is_active());
+
         let group = adw::PreferencesGroup::builder().title("Starting").build();
         page.add(&group);
         let loading = adw::SwitchRow::builder().title("Loading window").active(s.loading_screen).build();

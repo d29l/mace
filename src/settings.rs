@@ -92,6 +92,8 @@ pub struct Settings {
     pub anti_afk: bool,
     /// Never tell games their window lost focus, so they don't see you tab out.
     pub hide_tab_out: bool,
+    /// Roblox can't reach its telemetry and crash-report hosts (on unless turned off).
+    pub block_telemetry: bool,
     /// Ask GitHub for a newer Mace when it starts and every hour (only the copy install.sh puts in ~/.local/bin updates itself).
     pub check_updates: bool,
     /// Show the game you're playing, and as which account, in your Discord status.
@@ -129,6 +131,7 @@ impl Default for Settings {
             background_fps: 10,
             anti_afk: false,
             hide_tab_out: false,
+            block_telemetry: true,
             check_updates: true,
             discord: true,
             discord_join: false,
@@ -305,6 +308,7 @@ impl Settings {
             background_fps: as_u64(get("background_fps"), d.background_fps).min(1000),
             anti_afk: truthy(get("anti_afk_opt_in"), d.anti_afk),
             hide_tab_out: truthy(get("hide_tab_out"), d.hide_tab_out),
+            block_telemetry: truthy(get("block_telemetry"), d.block_telemetry),
             check_updates: truthy(get("check_updates"), d.check_updates),
             discord: truthy(get("discord"), d.discord),
             discord_join: truthy(get("discord_join"), d.discord_join),
@@ -467,6 +471,15 @@ pub fn from_nutmeg(config: &Value) -> Settings {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn telemetry_is_blocked_until_turned_off() {
+        assert!(Settings::default().block_telemetry);
+        assert!(Settings::from_stored(&json!({})).block_telemetry);
+        let off = Settings::from_stored(&json!({ "block_telemetry": false }));
+        assert!(!off.block_telemetry);
+        assert_eq!(serde_json::to_value(&off).unwrap()["block_telemetry"], json!(false));
+    }
 
     #[test]
     fn hiding_tabbing_out_is_off_until_chosen() {
