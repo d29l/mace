@@ -142,6 +142,10 @@ fn two_lines(painter: &egui::Painter, c: Colors, x: f32, mid: f32, width: f32, t
 #[allow(clippy::too_many_arguments)]
 fn two_lines_at(painter: &egui::Painter, c: Colors, x: f32, mid: f32, width: f32, title: &str, below: &str, size: f32) {
     let top = line(painter, title, bold(size), c.text, width);
+    if below.is_empty() {
+        painter.galley(pos2(x, mid - top.size().y / 2.0), top, c.text);
+        return;
+    }
     let sub = line(painter, below, regular(12.5), c.subtext, width);
     let total = top.size().y + 2.0 + sub.size().y;
     let y = mid - total / 2.0;
@@ -1206,7 +1210,7 @@ impl Ui {
             let picture = Rect::from_center_size(pos2(rect.min.x + 12.0 + 16.0, rect.center().y), vec2(32.0, 32.0));
             ui.painter().circle_filled(picture.center(), 16.0, c.surface);
             paint_icon(ui.painter(), picture.shrink(7.0), icon, c.text);
-            let line = if p.idle { "Nothing to show now" } else if on { "On screen" } else { "Off" };
+            let line = if p.idle { "Nothing to show now" } else { "" };
             let x = picture.max.x + 12.0;
             two_lines_at(ui.painter(), c, x, rect.center().y, rect.max.x - 64.0 - x, &p.tip, line, 14.0);
             let switch = Rect::from_center_size(pos2(rect.max.x - 12.0 - 18.0, rect.center().y), vec2(36.0, 20.0));
@@ -1258,7 +1262,7 @@ impl Ui {
                 ui.add_space(4.0);
                 heading(ui, c, if here.is_some() { "Add to this server" } else { "Start" });
                 if here.is_some() && addable.len() > 1
-                    && self.pick_row(ui, c, None, "Everyone", "All your accounts", &d.avatars).clicked()
+                    && self.pick_row(ui, c, None, "Everyone", "", &d.avatars).clicked()
                 {
                     self.run(actions, &["gather", &me.id]);
                     self.say("Bringing everyone…");
@@ -1493,9 +1497,9 @@ impl Ui {
             }
             if self.browser.next.is_some() {
                 let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());
-                ui.painter().text(rect.center(), Align2::CENTER_CENTER,
-                                  if self.browser.waiting.is_some() { "Loading more…" } else { "More below" },
-                                  regular(12.5), c.subtext);
+                if self.browser.waiting.is_some() {
+                    ui.painter().text(rect.center(), Align2::CENTER_CENTER, "Loading more…", regular(12.5), c.subtext);
+                }
                 // reaching the end loads the next page
                 if ui.is_rect_visible(rect) && self.browser.waiting.is_none() {
                     more = true;

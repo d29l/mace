@@ -70,7 +70,7 @@ impl ModsTab {
         let page = adw::PreferencesPage::builder().title("Mods").icon_name("applications-engineering-symbolic").build();
 
         let group = adw::PreferencesGroup::builder().title("Look and sound")
-            .description("For every account. Applies to games started afterwards.").build();
+            .description("Applies to games started afterwards.").build();
         page.add(&group);
         let cursor = adw::ComboRow::builder().title("Cursor").model(&gtk::StringList::new(&CURSOR_CHOICES)).build();
         let preview = gtk::Image::builder().pixel_size(32).visible(false).build();

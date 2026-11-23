@@ -21,10 +21,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, account: &Account, saved: impl Fn
     let dialog = adw::PreferencesDialog::builder().title(format!("{}'s settings", account.name())).search_enabled(false).build();
     let page = adw::PreferencesPage::builder().title("This account").build();
     dialog.add(&page);
-    let group = adw::PreferencesGroup::builder()
-        .title("Own settings")
-        .description("Turn one on to override the shared setting.")
-        .build();
+    let group = adw::PreferencesGroup::new();
     page.add(&group);
     let savers: Rc<RefCell<Vec<Saver>>> = Rc::new(RefCell::new(Vec::new()));
 

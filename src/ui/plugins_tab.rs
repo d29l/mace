@@ -52,12 +52,10 @@ impl PluginsTab {
         let suffix = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         suffix.append(&open);
         suffix.append(&new);
-        let group = adw::PreferencesGroup::builder().title("Plugins")
-            .description("Buttons and menus in the in-game bar.").header_suffix(&suffix).build();
+        let group = adw::PreferencesGroup::builder().title("Plugins").header_suffix(&suffix).build();
         page.add(&group);
         let help = adw::PreferencesGroup::new();
-        let guide = adw::ActionRow::builder().title("Making plugins").subtitle("In Luau, like Roblox scripts")
-            .activatable(true).build();
+        let guide = adw::ActionRow::builder().title("Making plugins").activatable(true).build();
         guide.add_suffix(&gtk::Image::from_icon_name("adw-external-link-symbolic"));
         help.add(&guide);
         page.add(&help);
@@ -170,7 +168,7 @@ impl PluginsTab {
         }
         body.push_str("\n\nPlugins are programs. Only turn on ones you trust.");
         let dialog = adw::AlertDialog::new(Some(&format!("Turn on {}?", manifest.name)), Some(&body));
-        dialog.add_responses(&[("cancel", "Cancel"), ("on", "Turn On")]);
+        dialog.add_responses(&[("cancel", "Cancel"), ("on", "Turn on")]);
         dialog.set_response_appearance("on", adw::ResponseAppearance::Suggested);
         dialog.set_default_response(Some("on"));
         dialog.set_close_response("cancel");
@@ -193,7 +191,7 @@ impl PluginsTab {
     }
 
     fn ask_new(self: &Rc<Self>) {
-        let dialog = adw::AlertDialog::new(Some("New plugin"), Some("It starts as a button with a menu."));
+        let dialog = adw::AlertDialog::new(Some("New plugin"), None);
         let entry = gtk::Entry::builder().placeholder_text("Name").activates_default(true).build();
         dialog.set_extra_child(Some(&entry));
         dialog.add_responses(&[("cancel", "Cancel"), ("make", "Make")]);

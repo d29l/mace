@@ -93,8 +93,7 @@ impl GlobalSettings {
         page.add(&group);
         let panel = adw::SwitchRow::builder().title("Show the panel").active(s.panel).build();
         let key = adw::EntryRow::builder().title("Key (e.g. INSERT, SHIFT + F1)").text(&s.overlay_key).build();
-        let blur = adw::SwitchRow::builder().title("Blur the game behind it")
-            .subtitle("Otherwise dimmed").active(s.panel_blur).build();
+        let blur = adw::SwitchRow::builder().title("Blur the game behind it").active(s.panel_blur).build();
         group.add(&panel);
         group.add(&key);
         group.add(&blur);
@@ -105,10 +104,7 @@ impl GlobalSettings {
         self.saver(move |t| t.overlay_key = key.text().trim().to_string());
         self.saver(move |t| t.panel_blur = blur.is_active());
 
-        let group = adw::PreferencesGroup::builder()
-            .title("Frame rate")
-            .description("Roblox caps FPS at the refresh rate it sees and at its own cap.")
-            .build();
+        let group = adw::PreferencesGroup::builder().title("Frame rate").build();
         page.add(&group);
         let cap = spin("Frame-rate cap", s.fps_cap, 100000.0, "0 = unchanged");
         let refresh = spin("Refresh rate Roblox sees", s.refresh_rate, 100000.0, "0 = the real rate");
@@ -126,13 +122,12 @@ impl GlobalSettings {
 
         let group = adw::PreferencesGroup::builder().title("Background").build();
         page.add(&group);
-        let background = spin("Background frame rate", s.background_fps, 1000.0, "Accounts you're not using. 0 = no limit");
+        let background = spin("Background frame rate", s.background_fps, 1000.0, "0 = no limit");
         let afk = adw::SwitchRow::builder().title("Anti-AFK")
-            .subtitle("Sends input to idle games so Roblox doesn't kick them. This may break Roblox's rules and get accounts banned.")
+            .subtitle("Sends input to idle games. May break Roblox's rules and get accounts banned.")
             .active(s.anti_afk).build();
         group.add(&background);
-        let tab_out = adw::SwitchRow::builder().title("Hide tabbing out")
-            .subtitle("Games won't know when you switch to another window").active(s.hide_tab_out).build();
+        let tab_out = adw::SwitchRow::builder().title("Hide tabbing out").active(s.hide_tab_out).build();
         group.add(&afk);
         group.add(&tab_out);
         background.connect_value_notify({ let c = changed.clone(); move |_| c() });
@@ -156,16 +151,14 @@ impl GlobalSettings {
 
         let group = adw::PreferencesGroup::builder().title("Starting").build();
         page.add(&group);
-        let loading = adw::SwitchRow::builder().title("Loading window")
-            .subtitle("Shows progress while Roblox starts").active(s.loading_screen).build();
+        let loading = adw::SwitchRow::builder().title("Loading window").active(s.loading_screen).build();
         group.add(&loading);
         loading.connect_active_notify({ let c = changed.clone(); move |_| c() });
         self.saver(move |t| t.loading_screen = loading.is_active());
 
         let group = adw::PreferencesGroup::builder().title("Discord").build();
         page.add(&group);
-        let discord = adw::SwitchRow::builder().title("Show what you're playing")
-            .subtitle("In your Discord status, with your Roblox account").active(s.discord).build();
+        let discord = adw::SwitchRow::builder().title("Show what you're playing").active(s.discord).build();
         let join = adw::SwitchRow::builder().title("Join button")
             .subtitle("Friends can join your server from your status").active(s.discord_join).sensitive(s.discord).build();
         group.add(&discord);
@@ -180,8 +173,7 @@ impl GlobalSettings {
         if crate::upgrade::installed_copy().is_some() {
             let group = adw::PreferencesGroup::builder().title("Updates").description(format!("Mace {}", crate::VERSION)).build();
             page.add(&group);
-            let check = adw::SwitchRow::builder().title("Check for updates").subtitle("When Mace starts, and every hour")
-                .active(s.check_updates).build();
+            let check = adw::SwitchRow::builder().title("Check for updates").active(s.check_updates).build();
             group.add(&check);
             check.connect_active_notify({ let c = changed.clone(); move |_| c() });
             self.saver(move |t| t.check_updates = check.is_active());

@@ -585,7 +585,7 @@ impl AccountRow {
         let rows = window.rows.borrow();
         if self.server.borrow().contains_key("ip") && rows.len() > 1 {
             let weak = Rc::downgrade(self);
-            Self::item(container, "Bring everyone here", "All your accounts", false, move || {
+            Self::item(container, "Bring everyone here", "", false, move || {
                 if let Some(me) = weak.upgrade() {
                     me.gather();
                 }
