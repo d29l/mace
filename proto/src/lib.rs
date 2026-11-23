@@ -88,6 +88,9 @@ pub struct Config {
     /// Nudge the game when it has been idle a while, so Roblox doesn't kick it.
     #[serde(default)]
     pub anti_afk: bool,
+    /// Don't tell the game when its window loses focus.
+    #[serde(default)]
+    pub hide_tab_out: bool,
     /// What stays on screen while the panel is closed, and where (the same in every game).
     #[serde(default)]
     pub pins: Vec<Pin>,

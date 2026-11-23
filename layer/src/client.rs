@@ -88,7 +88,7 @@ fn receive(message: ToPanel) {
     match message {
         ToPanel::Config(config) => {
             panel::INPUT.set_hotkey(config.key);
-            pace::configure(config.background_fps, config.anti_afk);
+            pace::configure(config.background_fps, config.anti_afk, config.hide_tab_out);
             panel::set_pinned(!config.pins.is_empty());
             with(|d| d.config = Some(config));
         }

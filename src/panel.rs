@@ -294,7 +294,8 @@ fn config(me: &str) -> Config {
     // the game you used last keeps its full frame rate even while you're in another app
     let background_fps = if last_focused().as_deref() == Some(me) { 0 } else { s.background_fps.min(u32::MAX as u64) as u32 };
     Config { me: me.to_string(), key: parse_key(&s.overlay_key).unwrap_or_default(), theme: theme(),
-             can_focus: *processes::HYPRLAND, blur: s.panel_blur, background_fps, anti_afk: s.anti_afk, pins: pins() }
+             can_focus: *processes::HYPRLAND, blur: s.panel_blur, background_fps, anti_afk: s.anti_afk,
+             hide_tab_out: s.hide_tab_out, pins: pins() }
 }
 
 /// What's pinned in the panel, the same for every game.
@@ -956,6 +957,7 @@ mod tests {
         assert!(!config("main").anti_afk);
         settings::save(&settings::Settings { background_fps: 12, anti_afk: true, ..Default::default() }).unwrap();
         assert!(config("main").anti_afk);
+        assert!(!config("main").hide_tab_out);
         std::fs::create_dir_all(paths::runtime()).unwrap();
         fsutil::write_atomic(&focused_file(), b"alt1").unwrap();
         assert_eq!(config("alt1").background_fps, 0);

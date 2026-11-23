@@ -131,11 +131,16 @@ impl GlobalSettings {
             .subtitle("Sends input to idle games so Roblox doesn't kick them. This may break Roblox's rules and get accounts banned.")
             .active(s.anti_afk).build();
         group.add(&background);
+        let tab_out = adw::SwitchRow::builder().title("Hide tabbing out")
+            .subtitle("Games won't know when you switch to another window").active(s.hide_tab_out).build();
         group.add(&afk);
+        group.add(&tab_out);
         background.connect_value_notify({ let c = changed.clone(); move |_| c() });
         afk.connect_active_notify({ let c = changed.clone(); move |_| c() });
+        tab_out.connect_active_notify({ let c = changed.clone(); move |_| c() });
         self.saver(move |t| t.background_fps = background.value() as u64);
         self.saver(move |t| t.anti_afk = afk.is_active());
+        self.saver(move |t| t.hide_tab_out = tab_out.is_active());
 
         let group = adw::PreferencesGroup::builder().title("Controls").build();
         page.add(&group);

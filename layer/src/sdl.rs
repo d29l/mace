@@ -140,7 +140,9 @@ unsafe extern "C" fn filter(_: *mut c_void, event: *mut Event) -> bool {
             input::KEY_DOWN | input::MOUSE_BUTTON_DOWN | input::MOUSE_WHEEL if !input::is_synthetic() => pace::input_seen(None),
             _ => {}
         }
-        panel::INPUT.filter(e)
+        let keep = panel::INPUT.filter(e);
+        // the game never hears it lost focus (it's the only way it learns); keys held were already let go
+        keep && !(e.kind() == input::WINDOW_FOCUS_LOST && pace::hides_tab_out())
     });
     IN_FILTER.with(|f| f.set(false));
     if !keep {

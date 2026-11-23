@@ -90,6 +90,8 @@ pub struct Settings {
     /// name: 0.1.0 had it on by default and saved that as `anti_afk`.
     #[serde(rename = "anti_afk_opt_in")]
     pub anti_afk: bool,
+    /// Never tell games their window lost focus, so they don't see you tab out.
+    pub hide_tab_out: bool,
     /// Ask GitHub for a newer Mace when it starts and every hour (only the copy install.sh puts in ~/.local/bin updates itself).
     pub check_updates: bool,
     /// Show the game you're playing, and as which account, in your Discord status.
@@ -126,6 +128,7 @@ impl Default for Settings {
             panel_blur: false,
             background_fps: 10,
             anti_afk: false,
+            hide_tab_out: false,
             check_updates: true,
             discord: true,
             discord_join: false,
@@ -301,6 +304,7 @@ impl Settings {
             panel_blur: truthy(get("panel_blur"), d.panel_blur),
             background_fps: as_u64(get("background_fps"), d.background_fps).min(1000),
             anti_afk: truthy(get("anti_afk_opt_in"), d.anti_afk),
+            hide_tab_out: truthy(get("hide_tab_out"), d.hide_tab_out),
             check_updates: truthy(get("check_updates"), d.check_updates),
             discord: truthy(get("discord"), d.discord),
             discord_join: truthy(get("discord_join"), d.discord_join),
@@ -463,6 +467,14 @@ pub fn from_nutmeg(config: &Value) -> Settings {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn hiding_tabbing_out_is_off_until_chosen() {
+        assert!(!Settings::default().hide_tab_out);
+        let chosen = Settings::from_stored(&json!({ "hide_tab_out": true }));
+        assert!(chosen.hide_tab_out);
+        assert_eq!(serde_json::to_value(&chosen).unwrap()["hide_tab_out"], json!(true));
+    }
 
     #[test]
     fn anti_afk_is_off_until_chosen() {

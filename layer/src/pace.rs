@@ -17,6 +17,8 @@ static FOCUSED: AtomicBool = AtomicBool::new(true);
 /// Frames per second while unfocused; 0 = no limit.
 static BACKGROUND_FPS: AtomicU32 = AtomicU32::new(0);
 static ANTI_AFK: AtomicBool = AtomicBool::new(false);
+/// Keep the game from learning its window lost focus.
+static HIDE_TAB_OUT: AtomicBool = AtomicBool::new(false);
 /// Milliseconds since `start()` of the player's last input, and of the last nudge.
 static LAST_INPUT: AtomicU64 = AtomicU64::new(0);
 static LAST_NUDGE: AtomicU64 = AtomicU64::new(0);
@@ -50,9 +52,15 @@ fn idle_limit() -> Duration {
 }
 
 /// Mace's settings for this game.
-pub fn configure(background_fps: u32, anti_afk: bool) {
+pub fn configure(background_fps: u32, anti_afk: bool, hide_tab_out: bool) {
     BACKGROUND_FPS.store(background_fps, Ordering::Relaxed);
     ANTI_AFK.store(anti_afk, Ordering::Relaxed);
+    HIDE_TAB_OUT.store(hide_tab_out, Ordering::Relaxed);
+}
+
+/// Whether the game is kept from seeing its window lose focus (Mace still sees it).
+pub fn hides_tab_out() -> bool {
+    HIDE_TAB_OUT.load(Ordering::Relaxed)
 }
 
 /// The window gained or lost keyboard focus (from SDL's event filter).
